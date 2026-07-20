@@ -1,0 +1,228 @@
+DATA_BLOCK "ModbusData"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 1.0
+// Dedicated non-retentive test map. HR10 is the actual PLC output-image feedback.
+   VAR
+      hold : Array[0..21] of Word;
+      TestManualEnable : Bool; // test-only F-safety permission to operate with A/M in M
+      TestAutoOK : Bool;       // physical Auto OR the explicit test-only permission
+      TelemetrySequence : Word; // increments every FC call so the GUI can detect stale PLC data
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+FUNCTION "FC_OutputTest" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 1.0
+// Volvo L60H commissioning-only I/O test controller.
+// HR0 = manual output request bitmask (bits 0..12 may be combined)
+// HR1 = W#16#A55A to ARM; HR8 = GUI heartbeat. HR2 echoes the active manual mask.
+// HR3..HR7 = pressures x10 bar; HR9 = safety/test status; HR10 = output image.
+// HR11 = crank-sequence stage (0=manual, 14..17=production crank stages). During
+// crank, Main Power/MCU/A-M retain their entry states and only ignition is sequenced.
+// HR12 = F-RQ heavy-relay readbacks for Q49 channels 0..7.
+// HR13 = W#16#4D4D to permit outputs with A/M in M; effective only while armed/heartbeat active.
+// HR14 = effective request image; HR15 = detailed safety inputs; HR16 = PLC telemetry sequence.
+// HR17..HR21 = signed raw analog inputs in the same order as HR3..HR7.
+   VAR_TEMP
+      requestMask : Word;
+      crankStage : Word;
+      active : Bool;
+      status : Word;
+      outputImage : Word;
+      relayReadback : Word;
+      requestImage : Word;
+      safetyDetail : Word;
+      crankActive : Bool;
+   END_VAR
+BEGIN
+   #requestMask := "ModbusData".hold[0];
+   #crankStage := "ModbusData".hold[11];
+
+   // Req_RunMon arms the existing heartbeat watchdog. No heartbeat means no requests.
+   "Seq_DB".Req_RunMon := ("ModbusData".hold[1] = W#16#A55A);
+   #active := ("ModbusData".hold[1] = W#16#A55A)
+              AND "FB_CommWatch_DB".commSeen
+              AND NOT "PressData".CommLost;
+   "ModbusData".TestManualEnable := #active AND ("ModbusData".hold[13] = W#16#4D4D);
+   "ModbusData".TestAutoOK := "AutoMan_Sw1" OR "ModbusData".TestManualEnable;
+
+   // Default every controllable request/output off each scan.
+   "Seq_DB".Req_MainPwr := FALSE;
+   "Seq_DB".Req_MCU := FALSE;
+   "Seq_DB".Req_AMRelays := FALSE;
+   "Seq_DB".Req_IgnR := FALSE;
+   "Seq_DB".Req_Ign1554 := FALSE;
+   "Seq_DB".Req_IgnDR := FALSE;
+   "Seq_DB".Req_Ign50 := FALSE;
+   "Seq_DB".Req_ParkUnlock := FALSE;
+   "Seq_DB".Req_EbrakeRel := FALSE;
+   "Seq_DB".Req_Error := FALSE;
+   "Seq_DB".Req_CrankFail := FALSE;
+   "Seq_DB".Req_PostPress := TRUE;
+   "Seq_DB".State := 0;
+
+   // Pressure monitoring is intentionally disabled in this dedicated meter-test project.
+   // The F-program still enforces E-stop, CommLost and hardware-disable inputs. Auto mode
+   // may be replaced only by the explicit, armed test-only TestManualEnable permission.
+   "PressData".PressTrip := FALSE;
+   "Seq_DB".ShuttleLowErr := FALSE;
+
+   #crankActive := #active
+                   AND (WORD_TO_INT(#crankStage) >= 14)
+                   AND (WORD_TO_INT(#crankStage) <= 17);
+   IF #active THEN
+      IF #crankActive THEN
+         // Preserve the three pre-start support-output states retained in HR0 by
+         // the GUI. The crank stages below control only the ignition-key outputs.
+         "Seq_DB".Req_MainPwr := #requestMask.%X0;
+         "Seq_DB".Req_MCU := #requestMask.%X1;
+         "Seq_DB".Req_AMRelays := #requestMask.%X2;
+         "Seq_DB".State := WORD_TO_INT(#crankStage);
+         CASE WORD_TO_INT(#crankStage) OF
+         14: // CRANK sequence: IGNACCESSORY (production state 6)
+            "Seq_DB".Req_IgnR := TRUE;
+            "Seq_DB".Req_IgnDR := TRUE;
+         15: // CRANK sequence: IGNRUN / glow (production state 7)
+            "Seq_DB".Req_IgnR := TRUE;
+            "Seq_DB".Req_Ign1554 := TRUE;
+            "Seq_DB".Req_IgnDR := TRUE;
+         16: // CRANK: drop R + 15/54, fire starter 50 (production state 8)
+            "Seq_DB".Req_IgnDR := TRUE;
+            "Seq_DB".Req_Ign50 := TRUE;
+         17: // Starter off, return to run position (engine-running or crank-timeout result)
+            "Seq_DB".Req_IgnR := TRUE;
+            "Seq_DB".Req_Ign1554 := TRUE;
+            "Seq_DB".Req_IgnDR := TRUE;
+            // Engine-running test mode: keep the run-position ignition requests
+            // while allowing the remaining independent outputs to be tested.
+            "Seq_DB".Req_ParkUnlock := #requestMask.%X8 AND NOT #requestMask.%X9;
+            "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+         END_CASE;
+      ELSE
+         // Manual test mode: every bit is independent, so combinations are allowed.
+         "Seq_DB".Req_MainPwr := #requestMask.%X0;
+         "Seq_DB".Req_MCU := #requestMask.%X1;
+         "Seq_DB".Req_AMRelays := #requestMask.%X2;
+         "Seq_DB".Req_IgnR := #requestMask.%X4;
+         "Seq_DB".Req_Ign1554 := #requestMask.%X5;
+         "Seq_DB".Req_IgnDR := #requestMask.%X6;
+         "Seq_DB".Req_Ign50 := #requestMask.%X7;
+         // Lock and Unlock are complementary in F-LAD; Lock wins if both bits arrive.
+         "Seq_DB".Req_ParkUnlock := #requestMask.%X8 AND NOT #requestMask.%X9;
+         "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+      END_IF;
+   END_IF;
+
+   IF #active THEN
+      "ModbusData".hold[2] := #requestMask;
+   ELSE
+      "ModbusData".hold[2] := W#16#0;
+   END_IF;
+
+   // Continuous pressure telemetry, identical units/order to the production interface.
+   "ModbusData".hold[3] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle1_bar * 10.0));
+   "ModbusData".hold[4] := INT_TO_WORD(REAL_TO_INT("PressData".Estop1_bar * 10.0));
+   "ModbusData".hold[5] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle2_bar * 10.0));
+   "ModbusData".hold[6] := INT_TO_WORD(REAL_TO_INT("PressData".Estop2_bar * 10.0));
+   "ModbusData".hold[7] := INT_TO_WORD(REAL_TO_INT("PressData".Prop_bar * 10.0));
+
+   #status := W#16#0;
+   #status.%X0 := #active;
+   #status.%X1 := "FB_CommWatch_DB".commSeen;
+   #status.%X2 := "PressData".CommLost;
+   #status.%X3 := "Main_Safety_RTG1_DB".SafeOK;
+   #status.%X4 := "AutoMan_Sw1";
+   #status.%X5 := "RemEstop_1";
+   #status.%X6 := "MCU_Disable";
+   #status.%X7 := "AM_Disable";
+   #status.%X8 := "Park_Disable";
+   #status.%X9 := "Ebrake_Disable";
+   #status.%X10 := "RemEstop_2";
+   #status.%X11 := "Rem_Ack";
+   #status.%X12 := "Rem_Start";
+   #status.%X13 := "ModbusData".TestManualEnable;
+   "ModbusData".hold[9] := #status;
+
+   // Actual output-image states after the cloned F-safety gates (not request echoes).
+   #outputImage := W#16#0;
+   #outputImage.%X0 := "MainPwr_Sw";
+   #outputImage.%X1 := "MCU_Enable";
+   #outputImage.%X2 := "AM_Relays";
+   #outputImage.%X4 := "Ign_R";
+   #outputImage.%X5 := "Ign_15_54";
+   #outputImage.%X6 := "Ign_DR";
+   #outputImage.%X7 := "Ign_50";
+   #outputImage.%X8 := "ParkBrake_Unlock";
+   #outputImage.%X9 := "ParkBrake_Lock";
+   #outputImage.%X10 := "Sol_Estop";
+   #outputImage.%X11 := "Sol_Estop_2";
+   "ModbusData".hold[10] := #outputImage;
+
+   // F-RQ readback bit 0 from each heavy-relay module's input byte.
+   // Bit order matches F-DQ %Q49.0..7 and the rack slots 7..14.
+   #relayReadback := W#16#0;
+   #relayReadback.%X0 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 5, bitOffset := 0);
+   #relayReadback.%X1 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 6, bitOffset := 0);
+   #relayReadback.%X2 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 55, bitOffset := 0);
+   #relayReadback.%X3 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 56, bitOffset := 0);
+   #relayReadback.%X4 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 57, bitOffset := 0);
+   #relayReadback.%X5 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 58, bitOffset := 0);
+   #relayReadback.%X6 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 59, bitOffset := 0);
+   #relayReadback.%X7 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 60, bitOffset := 0);
+   "ModbusData".hold[12] := #relayReadback;
+
+   // Effective PLC request states after ARM/heartbeat/crank selection. This is distinct
+   // from HR0, which is only the GUI's requested manual mask.
+   #requestImage := W#16#0;
+   #requestImage.%X0 := "Seq_DB".Req_MainPwr;
+   #requestImage.%X1 := "Seq_DB".Req_MCU;
+   #requestImage.%X2 := "Seq_DB".Req_AMRelays;
+   #requestImage.%X4 := "Seq_DB".Req_IgnR;
+   #requestImage.%X5 := "Seq_DB".Req_Ign1554;
+   #requestImage.%X6 := "Seq_DB".Req_IgnDR;
+   #requestImage.%X7 := "Seq_DB".Req_Ign50;
+   #requestImage.%X8 := "Seq_DB".Req_ParkUnlock;
+   #requestImage.%X9 := #active
+                         AND ((#crankStage = W#16#0) OR (#crankStage = W#16#17))
+                         AND #requestMask.%X9;
+   #requestImage.%X10 := "Seq_DB".Req_EbrakeRel;
+   #requestImage.%X11 := "Seq_DB".Req_EbrakeRel;
+   "ModbusData".hold[14] := #requestImage;
+
+   // Direct values used by the F-LAD SafeOK chain, matching the watch-table sources.
+   #safetyDetail := W#16#0;
+   #safetyDetail.%X0 := "Main_Safety_RTG1_DB".estop_safe;
+   #safetyDetail.%X1 := "Main_Safety_RTG1_DB".remote_estop_ok;
+   #safetyDetail.%X2 := "ModbusData".TestAutoOK;
+   #safetyDetail.%X3 := "PressData".PressTrip;
+   #safetyDetail.%X4 := "PressData".CommLost;
+   #safetyDetail.%X5 := "Main_Safety_RTG1_DB".SafeOK;
+   #safetyDetail.%X6 := #active;
+   #safetyDetail.%X7 := "FB_CommWatch_DB".commSeen;
+   "ModbusData".hold[15] := #safetyDetail;
+
+   "ModbusData".TelemetrySequence := "ModbusData".TelemetrySequence + W#16#1;
+   "ModbusData".hold[16] := "ModbusData".TelemetrySequence;
+   "ModbusData".hold[17] := INT_TO_WORD("Press_Shuttle_1");
+   "ModbusData".hold[18] := INT_TO_WORD("Press_Estop_1");
+   "ModbusData".hold[19] := INT_TO_WORD("Press_Shuttle_2");
+   "ModbusData".hold[20] := INT_TO_WORD("Press_Estop_2");
+   "ModbusData".hold[21] := INT_TO_WORD("Press_Prop");
+END_FUNCTION
+
+
+ORGANIZATION_BLOCK "Main"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 1.0
+// Dedicated output-test cycle. The production sequencer and pressure monitor are not called.
+BEGIN
+   "FC_ModbusServer"();
+   "FC_Pressure"();
+
+   // First pass presents ARM to the watchdog; second pass immediately applies its result.
+   "FC_OutputTest"();
+   "FB_CommWatch_DB"(Timeout := T#2S);
+   "FC_OutputTest"();
+END_ORGANIZATION_BLOCK

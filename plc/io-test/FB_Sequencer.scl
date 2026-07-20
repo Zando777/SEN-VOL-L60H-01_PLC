@@ -1,0 +1,170 @@
+FUNCTION_BLOCK "FB_Sequencer"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.3
+// Autonomous engine-start sequencer (standard program). Computes REQUEST bits;
+// the F-LAD safety program gates them and drives the real F-outputs.
+// Timeouts use #StateTimer.ET (time-in-state, auto-reset on each state change).
+
+   VAR_INPUT
+      AutoMode : Bool;          // Auto/Manual switch validated as Auto (from safety pgm)
+      MB_Alive : Bool;          // compute box: alive heartbeat
+      MB_TurnOn : Bool;         // compute box: "turn on"
+      MB_McuBooted : Bool;      // compute box: both MRS MCUs booted
+      MB_Start : Bool;          // compute box: START - deliberate go-ahead to begin ignition/crank (momentary)
+      MB_EngineRunning : Bool;  // compute box: engine running
+      MB_ParkRelease : Bool;    // compute box: release parking brake
+      MB_EbrakeRelease : Bool;  // compute box: release e-stop brake
+      MB_ErrorReset : Bool;     // compute box: reset error
+      MB_ReCrank : Bool;        // compute box: attempt cranking again
+      PressBuildOK : Bool;      // all build gates met (shuttles>=40, Estop/Prop>=120) from FC_Pressure
+      ShuttleBuildOK : Bool;    // shuttles >= 40 bar (from FC_Pressure) - drives the 10 s shuttle deadline
+      ShuttleLowErr : Bool;     // shuttle < 30 bar held 5 s while running (from FB_PressMon) -> PRESSFAULT
+      Abort : Bool;             // E-stop / safety abort -> back to INIT
+      SimMode : Bool;           // COMMISSIONING ONLY: bypass F-gated Abort/AutoMode + skip pressure build (PLCSIM). OFF for real machine.
+   END_VAR
+
+   VAR_OUTPUT
+      Req_MainPwr : Bool;
+      Req_MCU : Bool;
+      Req_AMRelays : Bool;
+      Req_IgnR : Bool;
+      Req_Ign1554 : Bool;
+      Req_IgnDR : Bool;
+      Req_Ign50 : Bool;
+      Req_ParkUnlock : Bool;
+      Req_EbrakeRel : Bool;
+      Req_Error : Bool;
+      Req_CrankFail : Bool;
+      Req_PostPress : Bool;     // keep posting pressures to compute box
+      Req_RunMon : Bool;        // engine running past pressure-build -> run-band monitor active
+      State : Int;
+   END_VAR
+
+   VAR
+      prevState : Int;
+      newState : Bool;
+      StateTimer : TON_TIME;
+      turnOnSeenLow : Bool := TRUE;   // anti auto-restart: after abort, block a new start until MB_TurnOn cycles low
+   END_VAR
+
+BEGIN
+   // shuttle low-pressure error while running -> PRESSFAULT (12). Placed above the abort so a
+   // real estop (Abort) still wins and forces State 0.
+   IF #ShuttleLowErr AND #State >= 14 AND #State <= 17 THEN
+      #State := 12;
+   END_IF;
+
+   // CONTINUOUS stop: E-stop/trip (Abort = NOT SafeOK) OR AutoMan switch -> Manual (NOT AutoMode).
+   // Checked every scan and in every state, so leaving Auto at ANY point snaps to INIT and blocks progression.
+   IF (#Abort OR NOT #AutoMode) AND NOT #SimMode THEN
+      #State := 0;
+      #turnOnSeenLow := FALSE;         // require a fresh turn-on before restarting
+   END_IF;
+   IF NOT #MB_TurnOn THEN
+      #turnOnSeenLow := TRUE;          // command released -> ready for a deliberate restart
+   END_IF;
+
+   #newState := (#State <> #prevState);
+   #prevState := #State;
+   #StateTimer(IN := NOT #newState, PT := T#200S);
+
+   CASE #State OF
+
+      0:  // INIT
+         #Req_MainPwr := FALSE; #Req_MCU := FALSE; #Req_AMRelays := FALSE;
+         #Req_IgnR := FALSE; #Req_Ign1554 := FALSE; #Req_IgnDR := FALSE; #Req_Ign50 := FALSE;
+         #Req_ParkUnlock := FALSE; #Req_EbrakeRel := FALSE; #Req_Error := FALSE;
+         #Req_CrankFail := FALSE; #Req_PostPress := FALSE; #Req_RunMon := FALSE;
+         IF (#AutoMode OR #SimMode) AND (#turnOnSeenLow OR #SimMode) THEN #State := 1; END_IF;
+
+      1:  // MAINPOWER - main switch / P1 + DR (compute-box power) so the box boots before the alive gate
+         #Req_MainPwr := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #MB_Alive THEN #State := 2; END_IF;
+
+      2:  // WAITTURNON
+         IF #MB_TurnOn THEN #State := 3; END_IF;
+
+      3:  // POWERMCU - power both MRS MCUs
+         #Req_MCU := TRUE;
+         IF #MB_McuBooted THEN #State := 4; END_IF;
+
+      4:  // MCU_SETTLE - let the MCUs settle 5 s (MCU stays powered)
+         IF #StateTimer.ET >= T#5S THEN #State := 5; END_IF;
+
+      5:  // A/M RELAYS / WAITSTART - A/M relays on, everything powered & ready.
+         //   HOLD here until the compute box sends a deliberate START. The ignition/crank
+         //   sequence must NOT begin automatically on MCU-boot alone. START is momentary,
+         //   so an abort back through here always needs a fresh press (no auto-crank on a stale bit).
+         //   (The operator's START pause replaces the old fixed 5 s A/M-relay settle.)
+         #Req_AMRelays := TRUE;
+         IF #MB_Start THEN #State := 6; END_IF;
+
+      6:  // IGNACCESSORY - key pos I (R), 1 s
+         #Req_IgnR := TRUE;
+         IF #StateTimer.ET >= T#1S THEN #State := 7; END_IF;
+
+      7:  // IGNRUN - key pos II (R + 15/54 + DR), 3 s glow
+         #Req_Ign1554 := TRUE; #Req_IgnDR := TRUE;
+         IF #StateTimer.ET >= T#3S THEN #State := 8; END_IF;
+
+      8:  // CRANK - key pos IV: drop R & 15/54, fire starter 50 (DR stays)
+         #Req_IgnR := FALSE; #Req_Ign1554 := FALSE; #Req_Ign50 := TRUE;
+         IF #MB_EngineRunning THEN
+            #State := 10;
+         ELSIF #StateTimer.ET >= T#10S THEN
+            #State := 9;
+         END_IF;
+
+      9:  // CRANKFAIL - starter off, back to run pos, raise crank-fail, wait for re-crank
+         #Req_Ign50 := FALSE; #Req_IgnR := TRUE; #Req_Ign1554 := TRUE;
+         #Req_CrankFail := TRUE;
+         IF #MB_EngineRunning THEN            // box rebooted mid-crank & now sees engine running -> don't re-crank
+            #Req_CrankFail := FALSE;
+            #State := 10;
+         ELSIF #MB_ReCrank THEN
+            #Req_CrankFail := FALSE;
+            #State := 8;
+         END_IF;
+
+      10: // ENGINERUN - engine started: run position, start posting pressures
+         #Req_Ign50 := FALSE; #Req_IgnR := TRUE; #Req_Ign1554 := TRUE; #Req_PostPress := TRUE;
+         #State := 11;
+
+      11: // PRESSBUILD - shuttles >=40 in 10 s, all build gates in 20 s
+         IF #PressBuildOK OR #SimMode THEN
+            #State := 14;
+         ELSIF #StateTimer.ET >= T#10S AND NOT #ShuttleBuildOK THEN
+            #State := 12;
+         ELSIF #StateTimer.ET >= T#20S THEN
+            #State := 12;
+         END_IF;
+
+      12: // PRESSFAULT - send error, re-engage brakes, wait for reset
+         #Req_Error := TRUE;
+         #Req_EbrakeRel := FALSE; #Req_ParkUnlock := FALSE;   // re-engage brakes on fault
+         IF #MB_ErrorReset THEN #State := 13; END_IF;
+
+      13: // ENGINEOFF - all ignition low, then return to INIT
+         #Req_IgnR := FALSE; #Req_Ign1554 := FALSE; #Req_IgnDR := FALSE; #Req_Ign50 := FALSE;
+         #Req_PostPress := FALSE; #Req_Error := FALSE; #Req_RunMon := FALSE;
+         IF #StateTimer.ET >= T#1S THEN #State := 0; END_IF;
+
+      14: // RUNNING - engine ok, pressures good; run-band monitor now active; wait for e-brake release
+         #Req_RunMon := TRUE;
+         IF #MB_EbrakeRelease THEN #State := 15; END_IF;
+
+      15: // EBRAKERELEASED - release e-stop brake; wait for park release
+         #Req_EbrakeRel := TRUE;
+         IF #MB_ParkRelease THEN #State := 16; END_IF;
+
+      16: // PARKRELEASED - unlock parking brake
+         #Req_ParkUnlock := TRUE;
+         #State := 17;
+
+      17: // OPERATIONAL - fully running, brakes released; hold
+         ;
+
+   END_CASE;
+
+END_FUNCTION_BLOCK

@@ -1,0 +1,19 @@
+# TIA Portal generated/native project data
+*.ap20
+*.zap20
+*.al20
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime output
+*.log
+*.txt~
