@@ -1,0 +1,35 @@
+FUNCTION "FC_ProductionModbusServer" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Production port-502 binding. Call this instead of the commissioning
+// FC_ModbusServer; both wrappers use the existing MB_SERVER_DB instance.
+BEGIN
+   "MB_SERVER_DB"(
+      DISCONNECT := FALSE,
+      MB_HOLD_REG := "ProductionModbusData".hold,
+      CONNECT := "ModbusConn".conn
+   );
+END_FUNCTION
+
+
+FUNCTION "FC_ProductionCycle" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Deterministic standard-program call order. This FC is compiled but is not
+// called by Main until production integration is explicitly approved.
+BEGIN
+   "FC_ProductionModbusServer"();
+   "FC_Pressure"();
+
+   // First pack supplies current physical feedback to the watchdog/sequencer.
+   "FC_ProductionIOPack"();
+   "FC_ProductionModbusIn"();
+   "ProductionComm_DB"();
+   "FC_ProductionCommToSequencer"();
+   "ProductionSeq_DB"();
+
+   // Second pack compares this scan's new requests with Q/F-RQ feedback before
+   // publishing the complete telemetry snapshot.
+   "FC_ProductionIOPack"();
+   "FC_ProductionModbusOut"();
+END_FUNCTION

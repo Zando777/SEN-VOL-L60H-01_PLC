@@ -8,10 +8,12 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 SOURCE = ROOT / "plc" / "production" / "ProductionModbus.scl"
 IO_SOURCE = ROOT / "plc" / "production" / "ProductionIO.scl"
+CYCLE_SOURCE = ROOT / "plc" / "production" / "ProductionCycle.scl"
 DOC = ROOT / "docs" / "production_modbus_v1.md"
 
 text = SOURCE.read_text(encoding="utf-8")
 io_text = IO_SOURCE.read_text(encoding="utf-8")
+cycle_text = CYCLE_SOURCE.read_text(encoding="utf-8")
 doc = DOC.read_text(encoding="utf-8")
 
 for forbidden in ("Ign30", "Ign_30", "Aux", "Rem_Arm", "SimMode"):
@@ -62,6 +64,26 @@ required_io = (
 for fragment in required_io:
     if fragment not in io_text:
         raise SystemExit(f"required production I/O invariant missing: {fragment}")
+
+required_cycle_order = (
+    '"FC_ProductionModbusServer"();',
+    '"FC_Pressure"();',
+    '"FC_ProductionIOPack"();',
+    '"FC_ProductionModbusIn"();',
+    '"ProductionComm_DB"();',
+    '"FC_ProductionCommToSequencer"();',
+    '"ProductionSeq_DB"();',
+    '"FC_ProductionModbusOut"();',
+)
+position = -1
+for fragment in required_cycle_order:
+    next_position = cycle_text.find(fragment, position + 1)
+    if next_position < 0:
+        raise SystemExit(f"production cycle call missing/out of order: {fragment}")
+    position = next_position
+
+if 'MB_HOLD_REG := "ProductionModbusData".hold' not in cycle_text:
+    raise SystemExit("production MB_SERVER is not bound to ProductionModbusData.hold")
 
 # Each defined command/status bit must have one inbound use outside comments.
 for bit in range(11):
