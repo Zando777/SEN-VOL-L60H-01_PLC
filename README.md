@@ -36,6 +36,11 @@ The crank sequence controls ignition stages 14–17. Main Power, MCU Enable and
 A/M Relays retain their pre-start states. In engine-running stage 17, non-ignition
 outputs can be tested without cancelling the run-position ignition requests.
 
+The GUI automatically records each session under
+`Documents/VolvoL60H/logs/YYYY-MM-DD/` as three CSV files: continuous telemetry,
+every outgoing Modbus write, and state/fault/operator events. CSV writes run on
+a background thread and do not block Modbus polling.
+
 See [`docs/io_test_current_state.md`](docs/io_test_current_state.md) for the
 complete register map, safety behavior and current deployment status.
 
@@ -46,4 +51,3 @@ release brakes and start the engine. Modbus commands do not bypass the F-program
 remote E-stop, acknowledgement, communication watchdog or hardware-disable
 gates. Commissioning must follow the approved machine isolation and safety
 procedure.
-

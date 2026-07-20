@@ -1,15 +1,36 @@
 #!/usr/bin/env python3
 """Volvo L60H commissioning-only Modbus I/O test panel."""
 
+import csv
+import queue
 import sys
+import threading
 import time
 import tkinter as tk
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from pymodbus.client import ModbusTcpClient
 
 
 PLC_IP = sys.argv[1] if len(sys.argv) > 1 else "10.90.11.200"
+POLL_INTERVAL_MS = 250
+
+LOG_OUTPUTS = (
+    ("main_power", 0, 7),
+    ("mcu_enable", 1, 6),
+    ("am_relays", 2, None),
+    ("ign_r", 4, 0),
+    ("ign_15_54", 5, 1),
+    ("ign_dr", 6, 2),
+    ("starter_50", 7, 3),
+    ("park_unlock", 8, 5),
+    ("park_lock", 9, 4),
+    ("estop_solenoid_1", 10, None),
+    ("estop_solenoid_2", 11, None),
+)
 
 OUTPUTS = [
     (1, "Main power", "MainPwr_Sw  %Q49.7", (0,)),
@@ -68,6 +89,134 @@ CRANK_STAGES = (
 )
 
 
+def _timestamp_fields():
+    now_utc = datetime.now(timezone.utc)
+    return {
+        "timestamp_utc": now_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "timestamp_local": now_utc.astimezone().isoformat(timespec="milliseconds"),
+    }
+
+
+class SessionCsvLogger:
+    """Non-blocking CSV telemetry, command and event writer."""
+
+    BASE_FIELDS = ("timestamp_utc", "timestamp_local", "run_id")
+    TELEMETRY_FIELDS = BASE_FIELDS + (
+        "elapsed_seconds", "plc_ip", "connection_ok", "error", "poll_latency_ms",
+        "gui_heartbeat", "armed", "outputs_in_m_requested", "selected_mask",
+        "crank_sequence_running", "crank_stage", "plc_active_mask",
+        "shuttle1_bar", "estop1_bar", "shuttle2_bar", "estop2_bar", "prop_bar",
+        "shuttle1_raw", "estop1_raw", "shuttle2_raw", "estop2_raw", "prop_raw",
+        "test_active", "heartbeat_seen", "comm_lost", "safe_ok", "auto_mode",
+        "remote_estop_ch1", "remote_estop_ch2", "remote_ack", "remote_start",
+        "mcu_disable", "am_relays_disable", "park_disable", "ebrake_disable",
+        "outputs_in_m_enabled", "estop_logic_safe", "remote_estop_ok", "test_auto_ok",
+        "pressure_trip", "comm_lost_direct", "safe_ok_direct", "test_active_direct",
+        "comm_seen_direct", "request_mask", "output_mask", "relay_readback_mask",
+        "plc_telemetry_sequence", "plc_telemetry_age_seconds",
+    ) + tuple(
+        field
+        for name, _, rq_bit in LOG_OUTPUTS
+        for field in ((f"req_{name}", f"q_{name}") + ((f"rq_{name}",) if rq_bit is not None else ()))
+    ) + tuple(f"hr{index}" for index in range(22))
+    COMMAND_FIELDS = BASE_FIELDS + (
+        "elapsed_seconds", "plc_ip", "source", "command_name", "register",
+        "value_decimal", "value_hex", "write_result", "modbus_error", "latency_ms",
+        "armed", "crank_stage", "selected_mask",
+    )
+    EVENT_FIELDS = BASE_FIELDS + (
+        "elapsed_seconds", "plc_ip", "severity", "event_type", "message",
+        "state", "old_value", "new_value",
+    )
+
+    def __init__(self, plc_ip: str):
+        self.plc_ip = plc_ip
+        self.started_monotonic = time.monotonic()
+        started = datetime.now().astimezone()
+        self.run_id = f"{started:%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
+        self.log_dir = Path.home() / "Documents" / "VolvoL60H" / "logs" / f"{started:%Y-%m-%d}"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        prefix = self.log_dir / f"{started:%Y-%m-%d_%H-%M-%S}_{self.run_id}"
+        self.paths = {
+            "telemetry": Path(f"{prefix}_telemetry.csv"),
+            "commands": Path(f"{prefix}_commands.csv"),
+            "events": Path(f"{prefix}_events.csv"),
+        }
+        self._queue = queue.Queue(maxsize=50000)
+        self._stop = threading.Event()
+        self._error = ""
+        self.dropped_rows = 0
+        self._thread = threading.Thread(target=self._writer, name="volvo-csv-logger", daemon=True)
+        self._thread.start()
+
+    @property
+    def error(self):
+        return self._error
+
+    @property
+    def elapsed(self):
+        return time.monotonic() - self.started_monotonic
+
+    def _enqueue(self, kind: str, row: dict):
+        item = dict(_timestamp_fields(), run_id=self.run_id, **row)
+        try:
+            self._queue.put_nowait((kind, item))
+        except queue.Full:
+            self.dropped_rows += 1
+            self._error = f"CSV queue full; dropped {self.dropped_rows} row(s)"
+
+    def telemetry(self, row: dict):
+        self._enqueue("telemetry", row)
+
+    def command(self, row: dict):
+        self._enqueue("commands", row)
+
+    def event(self, row: dict):
+        self._enqueue("events", row)
+
+    def close(self):
+        self._stop.set()
+        self._thread.join(timeout=5.0)
+        if self._thread.is_alive():
+            self._error = "CSV writer did not stop cleanly"
+
+    def _writer(self):
+        files = {}
+        writers = {}
+        schemas = {
+            "telemetry": self.TELEMETRY_FIELDS,
+            "commands": self.COMMAND_FIELDS,
+            "events": self.EVENT_FIELDS,
+        }
+        try:
+            for kind, path in self.paths.items():
+                files[kind] = path.open("w", newline="", encoding="utf-8")
+                writers[kind] = csv.DictWriter(files[kind], fieldnames=schemas[kind], extrasaction="ignore")
+                writers[kind].writeheader()
+            last_flush = time.monotonic()
+            while not self._stop.is_set() or not self._queue.empty():
+                try:
+                    kind, row = self._queue.get(timeout=0.2)
+                except queue.Empty:
+                    kind = None
+                if kind is not None:
+                    writers[kind].writerow(row)
+                now = time.monotonic()
+                if now - last_flush >= 1.0 or (kind == "events"):
+                    for handle in files.values():
+                        handle.flush()
+                    last_flush = now
+        except Exception as exc:
+            self._error = f"CSV writer error: {exc}"
+        finally:
+            for handle in files.values():
+                try:
+                    handle.flush()
+                    handle.close()
+                except Exception:
+                    pass
+
+
 class TestPanel:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -85,6 +234,7 @@ class TestPanel:
         self.connection_text = tk.StringVar(value="Disconnected")
         self.active_text = tk.StringVar(value="PLC active manual mask: 0x0000")
         self.telemetry_text = tk.StringVar(value="PLC telemetry: waiting")
+        self.logging_text = tk.StringVar(value="CSV logging: starting")
         self.crank_sequence_text = tk.StringVar(value="Crank sequence: idle")
         self.status_vars = {name: tk.StringVar(value="—") for name, _, _ in STATUS_FIELDS}
         self.safety_detail_vars = {name: tk.StringVar(value="—") for name, _, _ in SAFETY_DETAIL_FIELDS}
@@ -94,7 +244,16 @@ class TestPanel:
         self.pressure_vars = [tk.StringVar(value="— bar") for _ in PRESSURES]
         self.buttons: dict[int, ttk.Button] = {}
         self.output_indicators: dict[int, tuple[tk.Label, tuple[int, ...]]] = {}
+        self.logger = None
+        self.last_event_values = {}
+        self.last_written_controls = {}
+        try:
+            self.logger = SessionCsvLogger(PLC_IP)
+            self.logging_text.set(f"CSV logging: {self.logger.log_dir}")
+        except Exception as exc:
+            self.logging_text.set(f"CSV LOG ERROR: {exc}")
         self._build()
+        self._log_event("INFO", "GUI_STARTED", "I/O test GUI started")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.root.after(100, self.poll)
 
@@ -181,6 +340,9 @@ class TestPanel:
             wraplength=760,
             foreground="#555555",
         ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ttk.Label(outer, textvariable=self.logging_text, foreground="#555555").grid(
+            row=8, column=0, columnspan=5, sticky="w", pady=(6, 0)
+        )
 
     def arm_changed(self):
         if self.armed.get():
@@ -190,12 +352,14 @@ class TestPanel:
             )
             if not ok:
                 self.armed.set(False)
+                self._log_event("INFO", "ARM_CANCELLED", "Operator cancelled arming")
                 return
         else:
             self.cancel_crank_sequence(write=False)
             self.selected_mask = 0
             self.allow_manual_mode.set(False)
-        self.write_controls()
+        self._log_event("WARNING" if self.armed.get() else "INFO", "ARM_CHANGED", f"Armed={self.armed.get()}")
+        self.write_controls(source="arm_changed")
         self.refresh_buttons()
 
     def manual_mode_changed(self):
@@ -211,7 +375,12 @@ class TestPanel:
             )
             if not ok:
                 self.allow_manual_mode.set(False)
-        self.write_controls()
+        self._log_event(
+            "WARNING" if self.allow_manual_mode.get() else "INFO",
+            "MANUAL_MODE_PERMISSION_CHANGED",
+            f"Outputs-in-M permission requested={self.allow_manual_mode.get()}",
+        )
+        self.write_controls(source="manual_mode_changed")
 
     def toggle(self, selector: int):
         if not self.armed.get():
@@ -242,7 +411,13 @@ class TestPanel:
             elif selector == 10:
                 self.selected_mask &= ~(1 << 8)
             self.selected_mask |= mask
-        self.write_controls()
+        self._log_event(
+            "WARNING",
+            "OUTPUT_TOGGLE",
+            f"Selector {selector} changed; selected mask=0x{self.selected_mask:04X}",
+            state=self.crank_stage,
+        )
+        self.write_controls(source=f"toggle_{selector}")
         self.refresh_buttons()
 
     def all_off(self):
@@ -251,7 +426,8 @@ class TestPanel:
         self.crank_stage = 0
         self.armed.set(False)
         self.allow_manual_mode.set(False)
-        self.write_controls()
+        self._log_event("WARNING", "ALL_OFF", "ALL OFF / DISARM selected")
+        self.write_controls(source="all_off")
         self.refresh_buttons()
 
     def start_crank_sequence(self):
@@ -276,7 +452,8 @@ class TestPanel:
         self.crank_stage_started = time.monotonic()
         self.crank_stage = CRANK_STAGES[0][0]
         self.crank_sequence_text.set(f"Crank sequence: {CRANK_STAGES[0][2]}")
-        self.write_controls()
+        self._log_event("WARNING", "CRANK_STARTED", "Crank sequence started", state=self.crank_stage)
+        self.write_controls(source="crank_start")
         self.refresh_buttons()
 
     def cancel_crank_sequence(self, write=True):
@@ -289,7 +466,8 @@ class TestPanel:
             if was_running else "Crank sequence: idle"
         )
         if write and was_running:
-            self.write_controls()
+            self._log_event("WARNING", "CRANK_ABORTED", "Crank sequence aborted", state=0)
+            self.write_controls(source="crank_abort")
             self.refresh_buttons()
 
     def stop_starter(self):
@@ -299,7 +477,8 @@ class TestPanel:
         self.crank_stage_started = time.monotonic()
         self.crank_stage = 17
         self.crank_sequence_text.set(f"Crank sequence: {CRANK_STAGES[3][2]}")
-        self.write_controls()
+        self._log_event("INFO", "ENGINE_RUNNING_CONFIRMED", "Starter stopped; stage 17 selected", state=17)
+        self.write_controls(source="engine_running")
 
     def advance_crank_sequence(self):
         if not self.crank_sequence_running:
@@ -313,16 +492,131 @@ class TestPanel:
         selector, _, description = CRANK_STAGES[self.crank_stage_index]
         self.crank_stage = selector
         self.crank_sequence_text.set(f"Crank sequence: {description}")
-        self.write_controls()
+        self._log_event("INFO", "CRANK_STAGE_CHANGED", description, state=self.crank_stage)
+        self.write_controls(source="crank_advance")
 
-    def write_controls(self):
+    def _write_register(self, register: int, value: int, name: str, source: str):
+        started = time.monotonic()
+        result = "SUCCESS"
+        error = ""
         try:
-            self.client.write_register(0, self.selected_mask)
-            self.client.write_register(1, 0xA55A if self.armed.get() else 0)
-            self.client.write_register(11, self.crank_stage)
-            self.client.write_register(13, 0x4D4D if self.armed.get() and self.allow_manual_mode.get() else 0)
-        except Exception:
-            pass
+            response = self.client.write_register(register, value)
+            if response.isError():
+                result = "MODBUS_ERROR"
+                error = str(response)
+        except Exception as exc:
+            result = "EXCEPTION"
+            error = str(exc)
+        if self.logger is not None:
+            self.logger.command({
+                "elapsed_seconds": f"{self.logger.elapsed:.3f}",
+                "plc_ip": PLC_IP,
+                "source": source,
+                "command_name": name,
+                "register": register,
+                "value_decimal": value,
+                "value_hex": f"0x{value:04X}",
+                "write_result": result,
+                "modbus_error": error,
+                "latency_ms": f"{(time.monotonic() - started) * 1000.0:.3f}",
+                "armed": self.armed.get(),
+                "crank_stage": self.crank_stage,
+                "selected_mask": f"0x{self.selected_mask:04X}",
+            })
+        return result == "SUCCESS"
+
+    def write_controls(self, source="poll", force=False):
+        controls = (
+            (0, self.selected_mask, "MANUAL_OUTPUT_MASK"),
+            (1, 0xA55A if self.armed.get() else 0, "ARM_OUTPUT_TEST"),
+            (11, self.crank_stage, "CRANK_STAGE"),
+            (13, 0x4D4D if self.armed.get() and self.allow_manual_mode.get() else 0, "ALLOW_OUTPUTS_IN_M"),
+        )
+        for register, value, name in controls:
+            # Holding registers do not need identical writes every poll. Re-send
+            # after reconnect or when a user/sequence action explicitly writes.
+            if source == "poll" and not force and self.last_written_controls.get(register) == value:
+                continue
+            if self._write_register(register, value, name, source):
+                self.last_written_controls[register] = value
+
+    def _log_event(self, severity: str, event_type: str, message: str, state="", old_value="", new_value=""):
+        if self.logger is None:
+            return
+        self.logger.event({
+            "elapsed_seconds": f"{self.logger.elapsed:.3f}",
+            "plc_ip": PLC_IP,
+            "severity": severity,
+            "event_type": event_type,
+            "message": message,
+            "state": state,
+            "old_value": old_value,
+            "new_value": new_value,
+        })
+
+    def _log_changed_event(self, key: str, value, severity="INFO"):
+        if key not in self.last_event_values:
+            self.last_event_values[key] = value
+            return
+        old_value = self.last_event_values[key]
+        if old_value == value:
+            return
+        self.last_event_values[key] = value
+        self._log_event(severity, f"{key}_CHANGED", f"{key}: {old_value} -> {value}", self.crank_stage, old_value, value)
+
+    def _log_telemetry(self, regs, raw_inputs, poll_latency_ms, error=""):
+        if self.logger is None:
+            return
+        status = regs[9] if regs else 0
+        safety = regs[15] if regs else 0
+        requests = regs[14] if regs else 0
+        outputs = regs[10] if regs else 0
+        readbacks = regs[12] if regs else 0
+        row = {
+            "elapsed_seconds": f"{self.logger.elapsed:.3f}",
+            "plc_ip": PLC_IP,
+            "connection_ok": bool(regs),
+            "error": error,
+            "poll_latency_ms": f"{poll_latency_ms:.3f}",
+            "gui_heartbeat": self.heartbeat,
+            "armed": self.armed.get(),
+            "outputs_in_m_requested": self.allow_manual_mode.get(),
+            "selected_mask": f"0x{self.selected_mask:04X}",
+            "crank_sequence_running": self.crank_sequence_running,
+            "crank_stage": self.crank_stage,
+            "plc_active_mask": f"0x{regs[2]:04X}" if regs else "",
+            "request_mask": f"0x{requests:04X}" if regs else "",
+            "output_mask": f"0x{outputs:04X}" if regs else "",
+            "relay_readback_mask": f"0x{readbacks:04X}" if regs else "",
+        }
+        if regs:
+            pressure_names = ("shuttle1_bar", "estop1_bar", "shuttle2_bar", "estop2_bar", "prop_bar")
+            raw_names = ("shuttle1_raw", "estop1_raw", "shuttle2_raw", "estop2_raw", "prop_raw")
+            row.update({name: f"{value / 10.0:.1f}" for name, value in zip(pressure_names, regs[3:8])})
+            row.update(dict(zip(raw_names, raw_inputs)))
+            status_values = {
+                "test_active": 0, "heartbeat_seen": 1, "comm_lost": 2, "safe_ok": 3,
+                "auto_mode": 4, "remote_estop_ch1": 5, "mcu_disable": 6,
+                "am_relays_disable": 7, "park_disable": 8, "ebrake_disable": 9,
+                "remote_estop_ch2": 10, "remote_ack": 11, "remote_start": 12,
+                "outputs_in_m_enabled": 13,
+            }
+            safety_values = {
+                "estop_logic_safe": 0, "remote_estop_ok": 1, "test_auto_ok": 2,
+                "pressure_trip": 3, "comm_lost_direct": 4, "safe_ok_direct": 5,
+                "test_active_direct": 6, "comm_seen_direct": 7,
+            }
+            row.update({name: bool(status & (1 << bit)) for name, bit in status_values.items()})
+            row.update({name: bool(safety & (1 << bit)) for name, bit in safety_values.items()})
+            row["plc_telemetry_sequence"] = regs[16]
+            row["plc_telemetry_age_seconds"] = f"{time.monotonic() - self.last_telemetry_change:.3f}"
+            for name, q_bit, rq_bit in LOG_OUTPUTS:
+                row[f"req_{name}"] = bool(requests & (1 << q_bit))
+                row[f"q_{name}"] = bool(outputs & (1 << q_bit))
+                if rq_bit is not None:
+                    row[f"rq_{name}"] = bool(readbacks & (1 << rq_bit))
+            row.update({f"hr{index}": value for index, value in enumerate(regs)})
+        self.logger.telemetry(row)
 
     def refresh_buttons(self):
         for selector, button in self.buttons.items():
@@ -333,18 +627,22 @@ class TestPanel:
             button.configure(text="ON" if self.armed.get() and requested else "OFF")
 
     def poll(self):
+        poll_started = time.monotonic()
         try:
             self.advance_crank_sequence()
             if not self.client.connected:
                 self.client.connect()
             self.heartbeat = (self.heartbeat + 1) & 0xFFFF
-            self.client.write_register(8, self.heartbeat)
-            self.write_controls()
+            self._write_register(8, self.heartbeat, "GUI_HEARTBEAT", "poll")
+            self.write_controls(source="poll")
             response = self.client.read_holding_registers(0, count=22)
             if response.isError():
                 raise RuntimeError(str(response))
             regs = response.registers
+            was_connected = self.connected
             self.connected = True
+            if not was_connected:
+                self._log_event("INFO", "MODBUS_CONNECTED", f"Connected to {PLC_IP}:502")
             self.connection_text.set(f"Connected: {PLC_IP}:502")
             self.active_text.set(f"PLC active manual mask: 0x{regs[2]:04X}")
             raw_inputs = [value - 0x10000 if value & 0x8000 else value for value in regs[17:22]]
@@ -372,6 +670,18 @@ class TestPanel:
             output_bits = regs[10]
             request_bits = regs[14]
             relay_readbacks = regs[12]
+            self._log_telemetry(
+                regs,
+                raw_inputs,
+                (time.monotonic() - poll_started) * 1000.0,
+            )
+            self._log_changed_event("SAFE_OK", bool(bits & (1 << 3)), "WARNING")
+            self._log_changed_event("COMM_LOST", bool(bits & (1 << 2)), "WARNING")
+            self._log_changed_event("TEST_ACTIVE", bool(bits & (1 << 0)))
+            self._log_changed_event("AUTO_MODE", bool(bits & (1 << 4)))
+            self._log_changed_event("REMOTE_ESTOP_CH1", bool(bits & (1 << 5)), "WARNING")
+            self._log_changed_event("REMOTE_ESTOP_CH2", bool(bits & (1 << 10)), "WARNING")
+            self._log_changed_event("PRESSURE_TRIP", bool(safety_detail & (1 << 3)), "WARNING")
             for selector, (indicator, channel_bits) in self.output_indicators.items():
                 values = [bool(output_bits & (1 << bit)) for bit in channel_bits]
                 requests = [bool(request_bits & (1 << bit)) for bit in channel_bits]
@@ -397,7 +707,17 @@ class TestPanel:
                         ("#7bd88f" if all(values) else ("#f3d36a" if any(values) else "#d9d9d9"))),
                 )
         except Exception as exc:
+            was_connected = self.connected
             self.connected = False
+            self.last_written_controls.clear()
+            self._log_telemetry(
+                None,
+                [],
+                (time.monotonic() - poll_started) * 1000.0,
+                str(exc),
+            )
+            if was_connected:
+                self._log_event("ERROR", "MODBUS_DISCONNECTED", str(exc))
             self.connection_text.set(f"Disconnected: {exc}")
             for var in self.pressure_vars:
                 var.set("— bar")
@@ -411,7 +731,14 @@ class TestPanel:
             for indicator, _ in self.output_indicators.values():
                 indicator.configure(text="UNKNOWN", bg="#d9d9d9")
         finally:
-            self.root.after(250, self.poll)
+            if self.logger is not None:
+                if self.logger.error:
+                    self.logging_text.set(f"CSV LOG ERROR: {self.logger.error}")
+                else:
+                    self.logging_text.set(
+                        f"CSV logging: {self.logger.log_dir} | run {self.logger.run_id}"
+                    )
+            self.root.after(POLL_INTERVAL_MS, self.poll)
 
     def _set_status(self, name: str, value: bool, healthy_when: bool | None):
         self.status_vars.get(name, self.safety_detail_vars.get(name)).set("TRUE" if value else "FALSE")
@@ -427,13 +754,21 @@ class TestPanel:
         self.crank_stage = 0
         self.armed.set(False)
         self.allow_manual_mode.set(False)
-        self.write_controls()
+        self._log_event("INFO", "GUI_CLOSING", "GUI closing; output requests cleared")
+        self.write_controls(source="gui_close", force=True)
         try:
             self.client.close()
         finally:
+            if self.logger is not None:
+                self.logger.close()
             self.root.destroy()
 
 
-root = tk.Tk()
-TestPanel(root)
-root.mainloop()
+def main():
+    root = tk.Tk()
+    TestPanel(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

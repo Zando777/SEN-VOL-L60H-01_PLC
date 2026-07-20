@@ -239,6 +239,26 @@ Normal test flow:
 6. Toggle the required outputs and verify `Q`, `RQ` and the physical voltage.
 7. Use **ALL OFF / DISARM** when finished.
 
+## CSV session logging
+
+The GUI automatically creates a session directory at:
+
+`C:\Users\sensmore\Documents\VolvoL60H\logs\YYYY-MM-DD`
+
+Each GUI run writes three files with a shared run ID:
+
+- `*_telemetry.csv`: every polling cycle, including all 22 holding registers,
+  scaled and raw pressures, SafeOK sources, requests, output images and F-RQ
+  readbacks.
+- `*_commands.csv`: every outgoing Modbus register write with source, value,
+  result, exception and latency.
+- `*_events.csv`: connection changes, SafeOK/CommLost/E-stop/pressure-trip
+  changes, arming, output toggles and crank stages.
+
+The writer runs in a background thread, flushes at least once per second and
+shows its directory/run ID or an error on the GUI. Failed Modbus polls create
+explicit disconnected telemetry rows instead of silent gaps.
+
 ## Production-project status
 
 The production project remains separate and unchanged by this test-project
