@@ -22,6 +22,7 @@ automation project.
 - `docs/io_test_current_state.md` — current implementation and deployment status
 - `docs/compute_box_ros_handover.md` — compute-box Modbus/ROS handover
 - `docs/production_modbus_v1.md` — versioned production command/telemetry map
+- `docs/project_inventory.md` — canonical TIA projects and archived lineages
 - `docs/volvo_l60h_design.md` — system design notes
 - `docs/test_plan.md` — commissioning test plan
 
