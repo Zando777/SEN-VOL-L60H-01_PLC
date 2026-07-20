@@ -13,6 +13,8 @@ automation project.
 ## Repository contents
 
 - `plc/io-test/` — current commissioning I/O-test SCL sources
+- `plc/production/` — production sequencer/watchdog development sources; not yet
+  approved or downloaded
 - `tools/io_test_gui.py` — Modbus GUI for pressure telemetry, safety state and
   independent output testing
 - `tools/computebox_sim.py` — command-line compute-box simulator
@@ -44,6 +46,9 @@ flush/close the current session and start a fresh Run ID when enabled again.
 
 See [`docs/io_test_current_state.md`](docs/io_test_current_state.md) for the
 complete register map, safety behavior and current deployment status.
+
+Production development status and deliberately blocked assumptions are tracked
+in [`docs/production_sequence_v0.1.md`](docs/production_sequence_v0.1.md).
 
 ## Safety
 

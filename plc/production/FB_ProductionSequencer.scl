@@ -1,0 +1,737 @@
+FUNCTION_BLOCK "FB_ProductionSequencer"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Volvo L60H production sequence draft.
+//
+// Every request is assigned from a safe default on every scan. No output request
+// relies on carry-forward behavior from a previous state.
+//
+// IMPORTANT: Req_EstopBrakeChXApply is a semantic request (TRUE = brake applied).
+// Its final F-LAD-to-hardware polarity must be verified before commissioning.
+// The current machine shutdown ignition order is intentionally not guessed;
+// state 81 holds the engine safely with brakes applied until that definition exists.
+
+   VAR_INPUT
+      AutoMode : Bool;
+      Abort : Bool;                         // true safety abort: remote E-stop / safety pressure trip
+      SafetyTripActive : Bool;               // diagnostic classification for physical acknowledgement
+      ComputeAlive : Bool;                   // derived from changing heartbeat + compatible interface
+      CommLost : Bool;                       // phase-dependent watchdog output
+
+      SystemEnable : Bool;                   // maintained
+      EngineStartRequest : Bool;             // rising edge
+      ReCrankRequest : Bool;                  // rising edge
+      BeginDrivingRequest : Bool;             // rising edge
+      EngineStopRequest : Bool;               // rising edge
+      SystemShutdownRequest : Bool;           // rising edge
+      FaultResetRequest : Bool;               // rising edge
+      ShutdownAcknowledged : Bool;            // rising edge
+      ResetPermitted : Bool;                  // validated reset conditions/physical acknowledgement
+
+      McuBooted : Bool;
+      EngineRunning : Bool;
+      PressBuildOK : Bool;
+      ShuttleBuildOK : Bool;
+
+      Shuttle1_bar : Real;
+      Shuttle2_bar : Real;
+      Estop1_bar : Real;
+      Estop2_bar : Real;
+      Prop_bar : Real;
+      PressureSensorFault : Bool;
+
+      Rq_EstopBrakeCh1Applied : Bool;
+      Rq_EstopBrakeCh2Applied : Bool;
+      Rq_ParkLock : Bool;
+      Rq_ParkUnlock : Bool;
+
+      MaxCrankAttempts : USInt := 3;
+   END_VAR
+
+   VAR_OUTPUT
+      Req_MainPwr : Bool;
+      Req_MCU : Bool;
+      Req_AMRelays : Bool;
+      Req_IgnR : Bool;
+      Req_Ign1554 : Bool;
+      Req_IgnDR : Bool;
+      Req_Ign50 : Bool;
+      Req_EstopBrakeCh1Apply : Bool;
+      Req_EstopBrakeCh2Apply : Bool;
+      Req_ParkUnlock : Bool;
+
+      ReadyForDrive : Bool;
+      DrivingEnabled : Bool;
+      EstopBrakeTestPassed : Bool;
+      EstopBrakeChannelsReleased : Bool;
+      ShutdownReady : Bool;
+      ShutdownComplete : Bool;
+      ShutdownDefinitionRequired : Bool;
+      VehicleStopConfirmationRequired : Bool;
+
+      State : Int;
+      PreviousState : Int;
+      StateElapsed : Time;
+      TransitionReason : Word;
+      FaultCode : Word;
+      MajorFaultActive : Bool;
+      PhysicalAckRequired : Bool;
+      CrankAttempts : USInt;
+   END_VAR
+
+   VAR
+      prevStateInternal : Int;
+      stateChanged : Bool;
+      stateTimer : TON_TIME;
+
+      prevEngineStart : Bool;
+      prevReCrank : Bool;
+      prevBeginDriving : Bool;
+      prevEngineStop : Bool;
+      prevSystemShutdown : Bool;
+      prevFaultReset : Bool;
+      prevShutdownAck : Bool;
+
+      systemEnableSeenLow : Bool := TRUE;
+      shutdownAll : Bool;
+      brakeTestPassedLatched : Bool;
+      otherShuttleBaseline : Real;
+   END_VAR
+
+   VAR_TEMP
+      engineStartPulse : Bool;
+      reCrankPulse : Bool;
+      beginDrivingPulse : Bool;
+      engineStopPulse : Bool;
+      systemShutdownPulse : Bool;
+      faultResetPulse : Bool;
+      shutdownAckPulse : Bool;
+      supplyPressureOK : Bool;
+      testedConditionOK : Bool;
+      otherShuttleStable : Bool;
+   END_VAR
+
+   VAR CONSTANT
+      ST_INIT : Int := 0;
+      ST_WAKE_COMPUTE : Int := 1;
+      ST_POWER_MCU : Int := 2;
+      ST_MCU_SETTLE : Int := 3;
+      ST_READY_TO_START : Int := 4;
+      ST_IGN_ACCESSORY : Int := 5;
+      ST_IGN_RUN : Int := 6;
+      ST_CRANK : Int := 7;
+      ST_CRANK_FAIL : Int := 8;
+      ST_PRESS_BUILD : Int := 10;
+
+      ST_BRAKE_RELEASE_PREP : Int := 20;
+      ST_BRAKE_CH1_APPLY : Int := 21;
+      ST_BRAKE_CH1_REBUILD : Int := 22;
+      ST_BRAKE_CH2_APPLY : Int := 23;
+      ST_BRAKE_CH2_REBUILD : Int := 24;
+      ST_READY_FOR_DRIVE : Int := 30;
+      ST_ENABLE_AM : Int := 31;
+      ST_PARK_UNLOCK : Int := 32;
+      ST_OPERATIONAL : Int := 33;
+
+      ST_ENGINE_OFF_READY : Int := 40;
+      ST_FAULT_HOLD : Int := 60;
+      ST_COMM_LOST_STOP : Int := 70;
+      ST_SHUTDOWN_BRAKES : Int := 80;
+      ST_SHUTDOWN_IGN_TBD : Int := 81;
+      ST_SHUTDOWN_ACK : Int := 82;
+      ST_SYSTEM_OFF : Int := 83;
+
+      F_NONE : Word := W#16#0000;
+      F_COMPUTE_START_TIMEOUT : Word := W#16#1001;
+      F_MCU_BOOT_TIMEOUT : Word := W#16#1002;
+      F_CRANK_TIMEOUT : Word := W#16#1003;
+      F_CRANK_ATTEMPTS : Word := W#16#1004;
+      F_SHUTTLE_BUILD_TIMEOUT : Word := W#16#1101;
+      F_PRESSURE_BUILD_TIMEOUT : Word := W#16#1102;
+      F_PRESSURE_SENSOR : Word := W#16#1103;
+      F_ESTOP_SUPPLY_BAND : Word := W#16#1201;
+      F_BRAKE_CH1_APPLY : Word := W#16#1211;
+      F_BRAKE_CH1_REBUILD : Word := W#16#1212;
+      F_BRAKE_CH2_APPLY : Word := W#16#1221;
+      F_BRAKE_CH2_REBUILD : Word := W#16#1222;
+      F_PARK_FEEDBACK : Word := W#16#1230;
+      F_COMM_STARTUP : Word := W#16#1301;
+      F_COMM_OPERATIONAL : Word := W#16#1302;
+      F_SAFETY_TRIP : Word := W#16#1401;
+   END_VAR
+
+BEGIN
+   // Rising-edge command qualification. Command holding registers are production
+   // non-retentive, but edges are still required to prevent stale/repeated actions.
+   #engineStartPulse := #EngineStartRequest AND NOT #prevEngineStart;
+   #reCrankPulse := #ReCrankRequest AND NOT #prevReCrank;
+   #beginDrivingPulse := #BeginDrivingRequest AND NOT #prevBeginDriving;
+   #engineStopPulse := #EngineStopRequest AND NOT #prevEngineStop;
+   #systemShutdownPulse := #SystemShutdownRequest AND NOT #prevSystemShutdown;
+   #faultResetPulse := #FaultResetRequest AND NOT #prevFaultReset;
+   #shutdownAckPulse := #ShutdownAcknowledged AND NOT #prevShutdownAck;
+
+   #prevEngineStart := #EngineStartRequest;
+   #prevReCrank := #ReCrankRequest;
+   #prevBeginDriving := #BeginDrivingRequest;
+   #prevEngineStop := #EngineStopRequest;
+   #prevSystemShutdown := #SystemShutdownRequest;
+   #prevFaultReset := #FaultResetRequest;
+   #prevShutdownAck := #ShutdownAcknowledged;
+
+   IF NOT #SystemEnable THEN
+      #systemEnableSeenLow := TRUE;
+   END_IF;
+
+   // Explicit deterministic defaults. These are the complete desired requests
+   // for an unknown/INIT state: power and ignition off, both brakes applied,
+   // parking brake not unlocked, A/M disabled.
+   #Req_MainPwr := FALSE;
+   #Req_MCU := FALSE;
+   #Req_AMRelays := FALSE;
+   #Req_IgnR := FALSE;
+   #Req_Ign1554 := FALSE;
+   #Req_IgnDR := FALSE;
+   #Req_Ign50 := FALSE;
+   // In Auto the deterministic fallback is both autonomous E-stop brake
+   // channels applied. In Manual both are explicitly disengaged as required.
+   // This does not bypass the separate remote safety E-stop input/function.
+   #Req_EstopBrakeCh1Apply := #AutoMode;
+   #Req_EstopBrakeCh2Apply := #AutoMode;
+   #Req_ParkUnlock := FALSE;
+
+   #ReadyForDrive := FALSE;
+   #DrivingEnabled := FALSE;
+   #EstopBrakeChannelsReleased := FALSE;
+   #ShutdownReady := FALSE;
+   #ShutdownComplete := FALSE;
+   #ShutdownDefinitionRequired := FALSE;
+   #VehicleStopConfirmationRequired := FALSE;
+
+   #supplyPressureOK := (#Estop1_bar >= 120.0) AND (#Estop1_bar <= 150.0)
+                        AND (#Estop2_bar >= 120.0) AND (#Estop2_bar <= 150.0)
+                        AND (#Prop_bar >= 120.0) AND (#Prop_bar <= 150.0);
+
+   // Global shutdown commands. SystemEnable low is a maintained complete-shutdown
+   // request after a cycle has begun. EngineStop leaves support power available.
+   IF (#State <> #ST_INIT) AND (#State < #ST_SHUTDOWN_BRAKES) THEN
+      IF #systemShutdownPulse OR NOT #SystemEnable THEN
+         #shutdownAll := TRUE;
+         #TransitionReason := W#16#8002;
+         #State := #ST_SHUTDOWN_BRAKES;
+      ELSIF #engineStopPulse THEN
+         #shutdownAll := FALSE;
+         #TransitionReason := W#16#8001;
+         #State := #ST_SHUTDOWN_BRAKES;
+      END_IF;
+   END_IF;
+
+   // Communication loss is sequenced, not folded into the global SafeOK drop.
+   // True safety aborts still override everything immediately below.
+   IF #CommLost AND (#State >= #ST_OPERATIONAL) AND (#State < #ST_SHUTDOWN_BRAKES) THEN
+      #FaultCode := #F_COMM_OPERATIONAL;
+      #TransitionReason := W#16#E302;
+      #State := #ST_COMM_LOST_STOP;
+   ELSIF #CommLost AND (#State > #ST_INIT) AND (#State < #ST_OPERATIONAL) THEN
+      #FaultCode := #F_COMM_STARTUP;
+      #TransitionReason := W#16#E301;
+      #State := #ST_FAULT_HOLD;
+   END_IF;
+
+   // True safety abort always wins. Physical F-output removal occurs independently
+   // in F-LAD; this state update preserves a diagnostic and prevents auto-restart.
+   IF #Abort THEN
+      IF #SafetyTripActive THEN
+         #FaultCode := #F_SAFETY_TRIP;
+      END_IF;
+      #TransitionReason := W#16#E401;
+      #State := #ST_INIT;
+      #systemEnableSeenLow := FALSE;
+   END_IF;
+
+   // Leaving Auto always cancels the autonomous sequence. INIT explicitly keeps
+   // both PLC-controlled E-stop brake channels disengaged while Manual is active.
+   IF NOT #AutoMode THEN
+      #TransitionReason := W#16#E402;
+      #State := #ST_INIT;
+      #systemEnableSeenLow := FALSE;
+   END_IF;
+
+   #stateChanged := (#State <> #prevStateInternal);
+   IF #stateChanged THEN
+      #PreviousState := #prevStateInternal;
+      #prevStateInternal := #State;
+   END_IF;
+   #stateTimer(IN := NOT #stateChanged, PT := T#120S);
+   #StateElapsed := #stateTimer.ET;
+
+   CASE #State OF
+      #ST_INIT:
+         #brakeTestPassedLatched := FALSE;
+         #CrankAttempts := 0;
+         IF #faultResetPulse AND #ResetPermitted AND NOT #Abort THEN
+            #FaultCode := #F_NONE;
+            #TransitionReason := W#16#9001;
+         END_IF;
+         IF #AutoMode AND NOT #Abort AND #SystemEnable AND #systemEnableSeenLow
+            AND (#FaultCode = #F_NONE) THEN
+            #systemEnableSeenLow := FALSE;
+            #shutdownAll := FALSE;
+            #TransitionReason := W#16#0001;
+            #State := #ST_WAKE_COMPUTE;
+         END_IF;
+
+      #ST_WAKE_COMPUTE:
+         // Main Power then R + 15/54 + DR wake the compute box. R/15 are wake
+         // signals; the compute remains awake when they are later changed for crank.
+         #Req_MainPwr := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #ComputeAlive THEN
+            #TransitionReason := W#16#0101;
+            #State := #ST_POWER_MCU;
+         ELSIF #stateTimer.ET >= T#60S THEN
+            #FaultCode := #F_COMPUTE_START_TIMEOUT;
+            #TransitionReason := W#16#E101;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_POWER_MCU:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #McuBooted THEN
+            #TransitionReason := W#16#0201;
+            #State := #ST_MCU_SETTLE;
+         ELSIF #stateTimer.ET >= T#60S THEN
+            #FaultCode := #F_MCU_BOOT_TIMEOUT;
+            #TransitionReason := W#16#E102;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_MCU_SETTLE:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #stateTimer.ET >= T#5S THEN
+            #TransitionReason := W#16#0301;
+            #State := #ST_READY_TO_START;
+         END_IF;
+
+      #ST_READY_TO_START:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #engineStartPulse THEN
+            #CrankAttempts := 1;
+            #TransitionReason := W#16#0401;
+            #State := #ST_IGN_ACCESSORY;
+         END_IF;
+
+      #ST_IGN_ACCESSORY:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         IF #stateTimer.ET >= T#1S THEN
+            #TransitionReason := W#16#0501;
+            #State := #ST_IGN_RUN;
+         END_IF;
+
+      #ST_IGN_RUN:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #stateTimer.ET >= T#3S THEN
+            #TransitionReason := W#16#0601;
+            #State := #ST_CRANK;
+         END_IF;
+
+      #ST_CRANK:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_Ign50 := TRUE;
+         IF #EngineRunning THEN
+            #TransitionReason := W#16#0701;
+            #State := #ST_PRESS_BUILD;
+         ELSIF #stateTimer.ET >= T#10S THEN
+            #FaultCode := #F_CRANK_TIMEOUT;
+            #TransitionReason := W#16#E103;
+            #State := #ST_CRANK_FAIL;
+         END_IF;
+
+      #ST_CRANK_FAIL:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         IF #EngineRunning THEN
+            #FaultCode := #F_NONE;
+            #TransitionReason := W#16#0801;
+            #State := #ST_PRESS_BUILD;
+         ELSIF #reCrankPulse THEN
+            IF #CrankAttempts < #MaxCrankAttempts THEN
+               #CrankAttempts := #CrankAttempts + 1;
+               #FaultCode := #F_NONE;
+               #TransitionReason := W#16#0802;
+               #State := #ST_CRANK;
+            ELSE
+               #FaultCode := #F_CRANK_ATTEMPTS;
+               #TransitionReason := W#16#E104;
+               #State := #ST_FAULT_HOLD;
+            END_IF;
+         END_IF;
+
+      #ST_PRESS_BUILD:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         // Parking remains locked and A/M remains off. Release both autonomous
+         // E-stop brake channels so the two shuttle circuits can build pressure
+         // before their individual apply/rebuild test.
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         IF #PressureSensorFault THEN
+            #FaultCode := #F_PRESSURE_SENSOR;
+            #TransitionReason := W#16#E113;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #PressBuildOK THEN
+            #TransitionReason := W#16#1001;
+            #State := #ST_BRAKE_RELEASE_PREP;
+         ELSIF (#stateTimer.ET >= T#10S) AND NOT #ShuttleBuildOK THEN
+            #FaultCode := #F_SHUTTLE_BUILD_TIMEOUT;
+            #TransitionReason := W#16#E111;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #stateTimer.ET >= T#20S THEN
+            #FaultCode := #F_PRESSURE_BUILD_TIMEOUT;
+            #TransitionReason := W#16#E112;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_BRAKE_RELEASE_PREP:
+         // Parking brake remains locked and A/M remains off. Release both E-stop
+         // channels and require shuttle pressures to rebuild to 30..50 bar in 1 s.
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         #testedConditionOK := (#Shuttle1_bar >= 30.0) AND (#Shuttle1_bar <= 50.0)
+                               AND (#Shuttle2_bar >= 30.0) AND (#Shuttle2_bar <= 50.0)
+                               AND NOT #Rq_EstopBrakeCh1Applied
+                               AND NOT #Rq_EstopBrakeCh2Applied;
+         IF NOT #supplyPressureOK THEN
+            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #TransitionReason := W#16#E201;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #testedConditionOK THEN
+            #TransitionReason := W#16#2001;
+            #State := #ST_BRAKE_CH1_APPLY;
+         ELSIF #stateTimer.ET >= T#1S THEN
+            #FaultCode := #F_BRAKE_CH1_REBUILD;
+            #TransitionReason := W#16#E212;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_BRAKE_CH1_APPLY:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := TRUE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         IF #stateChanged THEN #otherShuttleBaseline := #Shuttle2_bar; END_IF;
+         #otherShuttleStable := ABS(#Shuttle2_bar - #otherShuttleBaseline) <= 10.0;
+         #testedConditionOK := (#Shuttle1_bar <= 5.0) AND #Rq_EstopBrakeCh1Applied;
+         IF NOT #supplyPressureOK THEN
+            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #TransitionReason := W#16#E201;
+            #State := #ST_FAULT_HOLD;
+         ELSIF NOT #otherShuttleStable THEN
+            #FaultCode := #F_BRAKE_CH1_APPLY;
+            #TransitionReason := W#16#E211;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #testedConditionOK THEN
+            #TransitionReason := W#16#2101;
+            #State := #ST_BRAKE_CH1_REBUILD;
+         ELSIF #stateTimer.ET >= T#1S THEN
+            #FaultCode := #F_BRAKE_CH1_APPLY;
+            #TransitionReason := W#16#E211;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_BRAKE_CH1_REBUILD:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         IF #stateChanged THEN #otherShuttleBaseline := #Shuttle2_bar; END_IF;
+         #otherShuttleStable := ABS(#Shuttle2_bar - #otherShuttleBaseline) <= 10.0;
+         #testedConditionOK := (#Shuttle1_bar >= 30.0) AND (#Shuttle1_bar <= 50.0)
+                               AND NOT #Rq_EstopBrakeCh1Applied;
+         IF NOT #supplyPressureOK THEN
+            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #TransitionReason := W#16#E201;
+            #State := #ST_FAULT_HOLD;
+         ELSIF NOT #otherShuttleStable THEN
+            #FaultCode := #F_BRAKE_CH1_REBUILD;
+            #TransitionReason := W#16#E212;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #testedConditionOK THEN
+            #TransitionReason := W#16#2201;
+            #State := #ST_BRAKE_CH2_APPLY;
+         ELSIF #stateTimer.ET >= T#1S THEN
+            #FaultCode := #F_BRAKE_CH1_REBUILD;
+            #TransitionReason := W#16#E212;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_BRAKE_CH2_APPLY:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := TRUE;
+         IF #stateChanged THEN #otherShuttleBaseline := #Shuttle1_bar; END_IF;
+         #otherShuttleStable := ABS(#Shuttle1_bar - #otherShuttleBaseline) <= 10.0;
+         #testedConditionOK := (#Shuttle2_bar <= 5.0) AND #Rq_EstopBrakeCh2Applied;
+         IF NOT #supplyPressureOK THEN
+            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #TransitionReason := W#16#E201;
+            #State := #ST_FAULT_HOLD;
+         ELSIF NOT #otherShuttleStable THEN
+            #FaultCode := #F_BRAKE_CH2_APPLY;
+            #TransitionReason := W#16#E221;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #testedConditionOK THEN
+            #TransitionReason := W#16#2301;
+            #State := #ST_BRAKE_CH2_REBUILD;
+         ELSIF #stateTimer.ET >= T#1S THEN
+            #FaultCode := #F_BRAKE_CH2_APPLY;
+            #TransitionReason := W#16#E221;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_BRAKE_CH2_REBUILD:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         IF #stateChanged THEN #otherShuttleBaseline := #Shuttle1_bar; END_IF;
+         #otherShuttleStable := ABS(#Shuttle1_bar - #otherShuttleBaseline) <= 10.0;
+         #testedConditionOK := (#Shuttle2_bar >= 30.0) AND (#Shuttle2_bar <= 50.0)
+                               AND NOT #Rq_EstopBrakeCh2Applied;
+         IF NOT #supplyPressureOK THEN
+            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #TransitionReason := W#16#E201;
+            #State := #ST_FAULT_HOLD;
+         ELSIF NOT #otherShuttleStable THEN
+            #FaultCode := #F_BRAKE_CH2_REBUILD;
+            #TransitionReason := W#16#E222;
+            #State := #ST_FAULT_HOLD;
+         ELSIF #testedConditionOK THEN
+            #brakeTestPassedLatched := TRUE;
+            #TransitionReason := W#16#2401;
+            #State := #ST_READY_FOR_DRIVE;
+         ELSIF #stateTimer.ET >= T#1S THEN
+            #FaultCode := #F_BRAKE_CH2_REBUILD;
+            #TransitionReason := W#16#E222;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_READY_FOR_DRIVE:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         #ReadyForDrive := #brakeTestPassedLatched AND #supplyPressureOK;
+         #EstopBrakeChannelsReleased := NOT #Rq_EstopBrakeCh1Applied
+                                        AND NOT #Rq_EstopBrakeCh2Applied;
+         IF #ReadyForDrive AND #EstopBrakeChannelsReleased AND #beginDrivingPulse THEN
+            #TransitionReason := W#16#3001;
+            #State := #ST_ENABLE_AM;
+         END_IF;
+
+      #ST_ENABLE_AM:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_AMRelays := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         IF #stateTimer.ET >= T#250MS THEN
+            #TransitionReason := W#16#3101;
+            #State := #ST_PARK_UNLOCK;
+         END_IF;
+
+      #ST_PARK_UNLOCK:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_AMRelays := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         #Req_ParkUnlock := TRUE;
+         IF #Rq_ParkUnlock AND NOT #Rq_ParkLock THEN
+            #TransitionReason := W#16#3201;
+            #State := #ST_OPERATIONAL;
+         ELSIF #stateTimer.ET >= T#5S THEN
+            #FaultCode := #F_PARK_FEEDBACK;
+            #TransitionReason := W#16#E230;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_OPERATIONAL:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_AMRelays := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_EstopBrakeCh1Apply := FALSE;
+         #Req_EstopBrakeCh2Apply := FALSE;
+         #Req_ParkUnlock := TRUE;
+         #ReadyForDrive := TRUE;
+         #DrivingEnabled := TRUE;
+         #EstopBrakeChannelsReleased := TRUE;
+
+      #ST_ENGINE_OFF_READY:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         IF #engineStartPulse AND #SystemEnable THEN
+            #CrankAttempts := 1;
+            #FaultCode := #F_NONE;
+            #TransitionReason := W#16#4001;
+            #State := #ST_IGN_ACCESSORY;
+         END_IF;
+
+      #ST_FAULT_HOLD:
+         // Engine remains running for diagnosis when already running. Brakes are
+         // applied, parking remains locked and A/M remains off.
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         IF #EngineRunning THEN
+            #Req_IgnR := TRUE;
+            #Req_Ign1554 := TRUE;
+            #Req_IgnDR := TRUE;
+         END_IF;
+         IF #faultResetPulse AND #ResetPermitted AND NOT #Abort THEN
+            #FaultCode := #F_NONE;
+            #TransitionReason := W#16#6001;
+            IF #EngineRunning THEN
+               #State := #ST_PRESS_BUILD;
+            ELSE
+               #State := #ST_INIT;
+               #systemEnableSeenLow := FALSE;
+            END_IF;
+         END_IF;
+
+      #ST_COMM_LOST_STOP:
+         // No vehicle-speed feedback exists. Apply E-stop brakes and revoke A/M,
+         // but keep park unlock requested rather than guessing when a moving
+         // machine is safe for parking-brake application.
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         #Req_IgnR := TRUE;
+         #Req_Ign1554 := TRUE;
+         #Req_IgnDR := TRUE;
+         #Req_ParkUnlock := TRUE;
+         #VehicleStopConfirmationRequired := TRUE;
+
+      #ST_SHUTDOWN_BRAKES:
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         IF #EngineRunning THEN
+            #Req_IgnR := TRUE;
+            #Req_Ign1554 := TRUE;
+            #Req_IgnDR := TRUE;
+         END_IF;
+         // Defaults apply both E-stop brake channels and lock the park brake.
+         IF #Rq_EstopBrakeCh1Applied AND #Rq_EstopBrakeCh2Applied
+            AND #Rq_ParkLock AND NOT #Rq_ParkUnlock THEN
+            #TransitionReason := W#16#8003;
+            #State := #ST_SHUTDOWN_IGN_TBD;
+         ELSIF #stateTimer.ET >= T#5S THEN
+            #FaultCode := #F_PARK_FEEDBACK;
+            #TransitionReason := W#16#E803;
+            #State := #ST_FAULT_HOLD;
+         END_IF;
+
+      #ST_SHUTDOWN_IGN_TBD:
+         // Deliberate hold: exact ignition-off order/timing is pending machine
+         // definition. Do not guess it. Engine is held in run position with all
+         // brakes applied and A/M disabled.
+         #Req_MainPwr := TRUE;
+         #Req_MCU := TRUE;
+         IF #EngineRunning THEN
+            #Req_IgnR := TRUE;
+            #Req_Ign1554 := TRUE;
+            #Req_IgnDR := TRUE;
+            #ShutdownDefinitionRequired := TRUE;
+         ELSE
+            #TransitionReason := W#16#8101;
+            #State := #ST_SHUTDOWN_ACK;
+         END_IF;
+
+      #ST_SHUTDOWN_ACK:
+         #Req_MainPwr := TRUE;
+         #ShutdownReady := TRUE;
+         IF #shutdownAll THEN
+            IF #shutdownAckPulse THEN
+               #TransitionReason := W#16#8201;
+               #State := #ST_SYSTEM_OFF;
+            END_IF;
+         ELSE
+            #TransitionReason := W#16#8202;
+            #State := #ST_ENGINE_OFF_READY;
+         END_IF;
+
+      #ST_SYSTEM_OFF:
+         #ShutdownComplete := TRUE;
+         IF NOT #SystemEnable THEN
+            #TransitionReason := W#16#8301;
+            #State := #ST_INIT;
+         END_IF;
+
+      ELSE
+         #FaultCode := W#16#FFFF;
+         #TransitionReason := W#16#EFFF;
+         #State := #ST_FAULT_HOLD;
+   END_CASE;
+
+   #EstopBrakeTestPassed := #brakeTestPassedLatched;
+   #MajorFaultActive := (#FaultCode <> #F_NONE);
+   #PhysicalAckRequired := #SafetyTripActive
+                           OR (#FaultCode = #F_COMM_OPERATIONAL)
+                           OR (#FaultCode = #F_PARK_FEEDBACK);
+END_FUNCTION_BLOCK

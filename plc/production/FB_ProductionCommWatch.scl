@@ -1,0 +1,52 @@
+FUNCTION_BLOCK "FB_ProductionCommWatch"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Phase-dependent compute-box heartbeat watchdog.
+// Startup/crank default: 60 s. Operational/driving default: 3 s.
+// The operational value remains configurable pending final safety validation.
+
+   VAR_INPUT
+      Heartbeat : Word;
+      MonitorEnabled : Bool;
+      Operational : Bool;
+      StartupTimeout : Time := T#60S;
+      OperationalTimeout : Time := T#3S;
+   END_VAR
+
+   VAR_OUTPUT
+      CommSeen : Bool;
+      CommHealthy : Bool;
+      CommLost : Bool;
+      HeartbeatChanged : Bool;
+      HeartbeatAge : Time;
+      ActiveTimeout : Time;
+   END_VAR
+
+   VAR
+      previousHeartbeat : Word;
+      watchdogTimer : TON_TIME;
+   END_VAR
+
+BEGIN
+   #HeartbeatChanged := (#Heartbeat <> #previousHeartbeat);
+   #previousHeartbeat := #Heartbeat;
+
+   IF #HeartbeatChanged THEN
+      #CommSeen := TRUE;
+   END_IF;
+
+   IF #Operational THEN
+      #ActiveTimeout := #OperationalTimeout;
+   ELSE
+      #ActiveTimeout := #StartupTimeout;
+   END_IF;
+
+   #watchdogTimer(
+      IN := #MonitorEnabled AND #CommSeen AND NOT #HeartbeatChanged,
+      PT := #ActiveTimeout
+   );
+
+   #HeartbeatAge := #watchdogTimer.ET;
+   #CommLost := #MonitorEnabled AND #CommSeen AND #watchdogTimer.Q;
+   #CommHealthy := #CommSeen AND NOT #CommLost;
+END_FUNCTION_BLOCK
