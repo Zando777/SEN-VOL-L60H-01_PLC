@@ -1,0 +1,203 @@
+DATA_BLOCK "ProductionModbusData"
+{ S7_Optimized_Access := 'FALSE' }
+VERSION : 0.1
+// Versioned non-retentive production Modbus map. FC_ProductionModbusIn also
+// clears HR0..HR15 on the first PLC scan as a second anti-stale-command layer.
+   VAR
+      hold : Array[0..127] of Word;
+      initialized : Bool;
+      telemetrySequence : Word;
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+DATA_BLOCK "ProductionIOData"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Integration boundary populated by F-LAD / verified I/O packing.
+// No hardware polarity or address is assumed in the production sequencer.
+   VAR
+      SafeOK : Bool;
+      EstopSafe : Bool;
+      RemoteEstopCh1 : Bool;
+      RemoteEstopCh2 : Bool;
+      RemoteAck : Bool;
+      ResetPermitted : Bool;
+      MCU_Disable : Bool;
+      AM_Disable : Bool;
+      Park_Disable : Bool;
+      EstopBrake_Disable : Bool;
+
+      OutputImage : Word;          // packed physical Q image, same bits as request image
+      RelayReadback : Word;        // packed verified F-RQ feedback, same bits as request image
+      OutputMismatch : Word;       // request/Q/RQ mismatch diagnostics
+      PressureFaultBits : Word;    // per-channel sensor/wire-break faults
+      PressureBandBits : Word;     // per-channel threshold/band diagnostics
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+FUNCTION "FC_ProductionModbusIn" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Call after FC_ModbusServer and before FB_ProductionCommWatch.
+// HR0..HR15 are compute-box owned. All command values are non-retentive and
+// commands requiring one action are rising-edge-qualified inside the sequencer.
+   VAR_TEMP
+      clearIndex : Int;
+   END_VAR
+BEGIN
+   IF NOT "ProductionModbusData".initialized THEN
+      FOR #clearIndex := 0 TO 15 DO
+         "ProductionModbusData".hold[#clearIndex] := W#16#0;
+      END_FOR;
+      "ProductionModbusData".initialized := TRUE;
+   END_IF;
+
+   "ProductionSeq_DB".SystemEnable := "ProductionModbusData".hold[0].%X0;
+   "ProductionSeq_DB".EngineStartRequest := "ProductionModbusData".hold[0].%X1;
+   "ProductionSeq_DB".ReCrankRequest := "ProductionModbusData".hold[0].%X2;
+   "ProductionSeq_DB".BeginDrivingRequest := "ProductionModbusData".hold[0].%X3;
+   "ProductionSeq_DB".EngineStopRequest := "ProductionModbusData".hold[0].%X4;
+   "ProductionSeq_DB".SystemShutdownRequest := "ProductionModbusData".hold[0].%X5;
+   "ProductionSeq_DB".FaultResetRequest := "ProductionModbusData".hold[0].%X6;
+   "ProductionSeq_DB".ShutdownAcknowledged := "ProductionModbusData".hold[0].%X7;
+   "ProductionSeq_DB".McuBooted := "ProductionModbusData".hold[0].%X9;
+   "ProductionSeq_DB".EngineRunning := "ProductionModbusData".hold[0].%X10;
+
+   "ProductionComm_DB".Heartbeat := "ProductionModbusData".hold[1];
+   "ProductionComm_DB".MonitorEnabled := ("ProductionSeq_DB".State > 0)
+                                                 AND ("ProductionSeq_DB".State < 83);
+   "ProductionComm_DB".Operational := "ProductionSeq_DB".DrivingEnabled;
+END_FUNCTION
+
+
+FUNCTION "FC_ProductionCommToSequencer" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Call immediately after FB_ProductionCommWatch.
+BEGIN
+   // HR2 must match schema 1.0 and HR0 bit 8 is ComputeReady. A static writable
+   // Alive bit alone is never accepted without the changing heartbeat.
+   "ProductionSeq_DB".ComputeAlive := "ProductionComm_DB".CommHealthy
+                                       AND ("ProductionModbusData".hold[2] = W#16#0100)
+                                       AND "ProductionModbusData".hold[0].%X8;
+   "ProductionSeq_DB".CommLost := "ProductionComm_DB".CommLost;
+   "ProductionSeq_DB".ResetPermitted := "ProductionIOData".ResetPermitted;
+END_FUNCTION
+
+
+FUNCTION "FC_ProductionModbusOut" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Call after FB_ProductionSequencer and pressure/safety telemetry packing.
+   VAR_TEMP
+      status : Word;
+      requestImage : Word;
+      sequenceFlags : Word;
+      safetyFlags : Word;
+      brakeFlags : Word;
+   END_VAR
+BEGIN
+   #status := W#16#0;
+   #status.%X0 := "ProductionSeq_DB".ComputeAlive;
+   #status.%X1 := "ProductionSeq_DB".ReadyForDrive;
+   #status.%X2 := "ProductionSeq_DB".DrivingEnabled;
+   #status.%X3 := "ProductionSeq_DB".EstopBrakeTestPassed;
+   #status.%X4 := "ProductionSeq_DB".EstopBrakeChannelsReleased;
+   #status.%X5 := "ProductionSeq_DB".MajorFaultActive;
+   #status.%X6 := "ProductionSeq_DB".PhysicalAckRequired;
+   #status.%X7 := "ProductionSeq_DB".ShutdownReady;
+   #status.%X8 := "ProductionSeq_DB".ShutdownComplete;
+   #status.%X9 := "ProductionSeq_DB".ShutdownDefinitionRequired;
+   #status.%X10 := "ProductionSeq_DB".VehicleStopConfirmationRequired;
+   #status.%X11 := "ProductionComm_DB".CommLost;
+   #status.%X12 := "ProductionSeq_DB".AutoMode;
+   #status.%X13 := "ProductionIOData".SafeOK;
+   #status.%X14 := "ProductionSeq_DB".EngineRunning;
+   #status.%X15 := "ProductionSeq_DB".McuBooted;
+
+   #requestImage := W#16#0;
+   #requestImage.%X0 := "ProductionSeq_DB".Req_MainPwr;
+   #requestImage.%X1 := "ProductionSeq_DB".Req_MCU;
+   #requestImage.%X2 := "ProductionSeq_DB".Req_AMRelays;
+   #requestImage.%X3 := "ProductionSeq_DB".Req_IgnR;
+   #requestImage.%X4 := "ProductionSeq_DB".Req_Ign1554;
+   #requestImage.%X5 := "ProductionSeq_DB".Req_IgnDR;
+   #requestImage.%X6 := "ProductionSeq_DB".Req_Ign50;
+   #requestImage.%X7 := "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
+   #requestImage.%X8 := "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
+   #requestImage.%X9 := "ProductionSeq_DB".Req_ParkUnlock;
+
+   #sequenceFlags := W#16#0;
+   #sequenceFlags.%X0 := "ProductionSeq_DB".SystemEnable;
+   #sequenceFlags.%X1 := "ProductionSeq_DB".EngineStartRequest;
+   #sequenceFlags.%X2 := "ProductionSeq_DB".ReCrankRequest;
+   #sequenceFlags.%X3 := "ProductionSeq_DB".BeginDrivingRequest;
+   #sequenceFlags.%X4 := "ProductionSeq_DB".EngineStopRequest;
+   #sequenceFlags.%X5 := "ProductionSeq_DB".SystemShutdownRequest;
+   #sequenceFlags.%X6 := "ProductionSeq_DB".FaultResetRequest;
+   #sequenceFlags.%X7 := "ProductionSeq_DB".ShutdownAcknowledged;
+
+   #safetyFlags := W#16#0;
+   #safetyFlags.%X0 := "ProductionIOData".SafeOK;
+   #safetyFlags.%X1 := "ProductionIOData".EstopSafe;
+   #safetyFlags.%X2 := "ProductionIOData".RemoteEstopCh1;
+   #safetyFlags.%X3 := "ProductionIOData".RemoteEstopCh2;
+   #safetyFlags.%X4 := "ProductionIOData".RemoteAck;
+   #safetyFlags.%X5 := "ProductionIOData".ResetPermitted;
+   #safetyFlags.%X6 := "ProductionIOData".MCU_Disable;
+   #safetyFlags.%X7 := "ProductionIOData".AM_Disable;
+   #safetyFlags.%X8 := "ProductionIOData".Park_Disable;
+   #safetyFlags.%X9 := "ProductionIOData".EstopBrake_Disable;
+   #safetyFlags.%X10 := "ProductionSeq_DB".Abort;
+   #safetyFlags.%X11 := "ProductionSeq_DB".SafetyTripActive;
+
+   #brakeFlags := W#16#0;
+   #brakeFlags.%X0 := "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
+   #brakeFlags.%X1 := "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
+   #brakeFlags.%X2 := "ProductionSeq_DB".Rq_EstopBrakeCh1Applied;
+   #brakeFlags.%X3 := "ProductionSeq_DB".Rq_EstopBrakeCh2Applied;
+   #brakeFlags.%X4 := "ProductionSeq_DB".Req_ParkUnlock;
+   #brakeFlags.%X5 := "ProductionSeq_DB".Rq_ParkUnlock;
+   #brakeFlags.%X6 := "ProductionSeq_DB".Rq_ParkLock;
+   #brakeFlags.%X7 := "ProductionSeq_DB".EstopBrakeTestPassed;
+
+   "ProductionModbusData".hold[16] := #status;
+   "ProductionModbusData".hold[17] := INT_TO_WORD("ProductionSeq_DB".State);
+   "ProductionModbusData".hold[18] := INT_TO_WORD("ProductionSeq_DB".PreviousState);
+   "ProductionModbusData".hold[19] := "ProductionSeq_DB".FaultCode;
+   "ProductionModbusData".hold[20] := "ProductionSeq_DB".TransitionReason;
+   "ProductionModbusData".hold[21] := DINT_TO_WORD(TIME_TO_DINT("ProductionSeq_DB".StateElapsed) / 100);
+   "ProductionModbusData".hold[22] := USINT_TO_WORD("ProductionSeq_DB".CrankAttempts);
+   "ProductionModbusData".telemetrySequence := "ProductionModbusData".telemetrySequence + W#16#1;
+   "ProductionModbusData".hold[23] := "ProductionModbusData".telemetrySequence;
+   "ProductionModbusData".hold[24] := W#16#0100; // PLC Modbus schema 1.0
+   "ProductionModbusData".hold[25] := W#16#0001; // production sequencer version 0.1
+   "ProductionModbusData".hold[26] := "ProductionModbusData".hold[3]; // observed command sequence
+   "ProductionModbusData".hold[27] := #sequenceFlags;
+
+   "ProductionModbusData".hold[32] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle1_bar * 10.0));
+   "ProductionModbusData".hold[33] := INT_TO_WORD(REAL_TO_INT("PressData".Estop1_bar * 10.0));
+   "ProductionModbusData".hold[34] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle2_bar * 10.0));
+   "ProductionModbusData".hold[35] := INT_TO_WORD(REAL_TO_INT("PressData".Estop2_bar * 10.0));
+   "ProductionModbusData".hold[36] := INT_TO_WORD(REAL_TO_INT("PressData".Prop_bar * 10.0));
+   "ProductionModbusData".hold[37] := INT_TO_WORD("Press_Shuttle_1");
+   "ProductionModbusData".hold[38] := INT_TO_WORD("Press_Estop_1");
+   "ProductionModbusData".hold[39] := INT_TO_WORD("Press_Shuttle_2");
+   "ProductionModbusData".hold[40] := INT_TO_WORD("Press_Estop_2");
+   "ProductionModbusData".hold[41] := INT_TO_WORD("Press_Prop");
+   "ProductionModbusData".hold[42] := "ProductionIOData".PressureFaultBits;
+   "ProductionModbusData".hold[43] := "ProductionIOData".PressureBandBits;
+
+   "ProductionModbusData".hold[48] := #requestImage;
+   "ProductionModbusData".hold[49] := "ProductionIOData".OutputImage;
+   "ProductionModbusData".hold[50] := "ProductionIOData".RelayReadback;
+   "ProductionModbusData".hold[51] := "ProductionIOData".OutputMismatch;
+   "ProductionModbusData".hold[52] := #safetyFlags;
+   "ProductionModbusData".hold[53] := #brakeFlags;
+   "ProductionModbusData".hold[54] := DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".HeartbeatAge) / 100);
+   "ProductionModbusData".hold[55] := DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".ActiveTimeout) / 100);
+END_FUNCTION

@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Static invariants for the versioned production Modbus interface."""
+
+import re
+from pathlib import Path
+
+
+ROOT = Path(__file__).parents[1]
+SOURCE = ROOT / "plc" / "production" / "ProductionModbus.scl"
+DOC = ROOT / "docs" / "production_modbus_v1.md"
+
+text = SOURCE.read_text(encoding="utf-8")
+doc = DOC.read_text(encoding="utf-8")
+
+for forbidden in ("Ign30", "Ign_30", "Aux", "Rem_Arm", "SimMode"):
+    if forbidden in text or forbidden in doc:
+        raise SystemExit(f"forbidden legacy identifier remains: {forbidden}")
+
+required_source = (
+    "{ S7_Optimized_Access := 'FALSE' }",
+    "FOR #clearIndex := 0 TO 15 DO",
+    '"ProductionModbusData".hold[#clearIndex] := W#16#0;',
+    '"ProductionSeq_DB".SystemEnable := "ProductionModbusData".hold[0].%X0;',
+    '"ProductionSeq_DB".SystemShutdownRequest := "ProductionModbusData".hold[0].%X5;',
+    '"ProductionSeq_DB".ShutdownAcknowledged := "ProductionModbusData".hold[0].%X7;',
+    '"ProductionSeq_DB".ComputeAlive := "ProductionComm_DB".CommHealthy',
+    '"ProductionModbusData".hold[2] = W#16#0100',
+    '"ProductionModbusData".hold[16] := #status;',
+    '"ProductionModbusData".hold[32]',
+    '"ProductionModbusData".hold[36]',
+    '"ProductionModbusData".hold[37]',
+    '"ProductionModbusData".hold[41]',
+    '"ProductionModbusData".hold[48] := #requestImage;',
+    '"ProductionModbusData".hold[49] := "ProductionIOData".OutputImage;',
+    '"ProductionModbusData".hold[50] := "ProductionIOData".RelayReadback;',
+    '"ProductionModbusData".hold[51] := "ProductionIOData".OutputMismatch;',
+    '"ProductionModbusData".hold[52] := #safetyFlags;',
+    '"ProductionModbusData".hold[53] := #brakeFlags;',
+    '"ProductionModbusData".hold[54]',
+    '"ProductionModbusData".hold[55]',
+)
+for fragment in required_source:
+    if fragment not in text:
+        raise SystemExit(f"required Modbus invariant missing: {fragment}")
+
+# Each defined command/status bit must have one inbound use outside comments.
+for bit in range(11):
+    count = len(re.findall(rf'hold\[0\]\.\%X{bit}(?!\d)', text))
+    if count != 1:
+        raise SystemExit(f"HR0 bit {bit} has {count} source mappings; expected exactly 1")
+
+required_docs = (
+    "All command registers are non-retentive",
+    "Compute schema version",
+    "Incrementing PLC telemetry sequence",
+    "Signed raw pressure inputs",
+    "Safety-gated physical output image",
+    "Packed F-RQ relay readback image",
+    "E-stop brake channel 1 applied",
+    "A/M Relays",
+)
+for fragment in required_docs:
+    if fragment not in doc:
+        raise SystemExit(f"Modbus documentation invariant missing: {fragment}")
+
+print("production Modbus static validation OK: schema 1.0, HR0..HR55")
