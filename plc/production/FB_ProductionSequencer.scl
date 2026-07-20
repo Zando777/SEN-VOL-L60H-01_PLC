@@ -69,18 +69,18 @@ VERSION : 0.1
       ShutdownDefinitionRequired : Bool;
       VehicleStopConfirmationRequired : Bool;
 
-      State : Int;
-      PreviousState : Int;
-      StateElapsed : Time;
-      TransitionReason : Word;
-      FaultCode : Word;
-      MajorFaultActive : Bool;
-      PhysicalAckRequired : Bool;
-      CrankAttempts : USInt;
+      State : Int := 0;
+      PreviousState : Int := 0;
+      StateElapsed : Time := T#0MS;
+      TransitionReason : Word := W#16#0000;
+      FaultCode : Word := W#16#0000;
+      MajorFaultActive : Bool := FALSE;
+      PhysicalAckRequired : Bool := FALSE;
+      CrankAttempts : USInt := 0;
    END_VAR
 
    VAR
-      prevStateInternal : Int;
+      prevStateInternal : Int := 0;
       stateChanged : Bool;
       stateTimer : TON_TIME;
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 SOURCE = Path(__file__).parents[1] / "plc" / "production" / "FB_ProductionSequencer.scl"
 text = SOURCE.read_text(encoding="utf-8")
+instances = (SOURCE.parent / "ProductionInstances.scl").read_text(encoding="utf-8")
 
 for forbidden in ("Req_Ign30", "Ign_30", "SimMode", "Req_AuxRelays", "Aux_Relays"):
     if forbidden in text:
@@ -17,6 +18,9 @@ required = (
     "#Req_Ign50 := FALSE;",
     "#Req_EstopBrakeCh1Apply := #AutoMode;",
     "#Req_EstopBrakeCh2Apply := #AutoMode;",
+    "State : Int := 0;",
+    "FaultCode : Word := W#16#0000;",
+    "CrankAttempts : USInt := 0;",
     "IF NOT #AutoMode THEN",
     "#ST_BRAKE_CH1_APPLY:",
     "#Shuttle1_bar <= 5.0",
@@ -34,6 +38,16 @@ required = (
 for fragment in required:
     if fragment not in text:
         raise SystemExit(f"required invariant missing: {fragment}")
+
+for fragment in (
+    'DATA_BLOCK "ProductionSeq_DB"',
+    '"FB_ProductionSequencer"',
+    'DATA_BLOCK "ProductionComm_DB"',
+    '"FB_ProductionCommWatch"',
+    "NON_RETAIN",
+):
+    if fragment not in instances:
+        raise SystemExit(f"production instance DB invariant missing: {fragment}")
 
 constant_states = set(re.findall(r"^\s+(ST_[A-Z0-9_]+)\s*:\s*Int\s*:=", text, re.MULTILINE))
 case_states = set(re.findall(r"^\s+#(ST_[A-Z0-9_]+):", text, re.MULTILINE))

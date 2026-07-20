@@ -1,0 +1,16 @@
+DATA_BLOCK "ProductionSeq_DB"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+"FB_ProductionSequencer"
+BEGIN
+END_DATA_BLOCK
+
+
+DATA_BLOCK "ProductionComm_DB"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+"FB_ProductionCommWatch"
+BEGIN
+END_DATA_BLOCK

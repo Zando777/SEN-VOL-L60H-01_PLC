@@ -14,16 +14,16 @@ VERSION : 0.1
    END_VAR
 
    VAR_OUTPUT
-      CommSeen : Bool;
-      CommHealthy : Bool;
-      CommLost : Bool;
-      HeartbeatChanged : Bool;
-      HeartbeatAge : Time;
-      ActiveTimeout : Time;
+      CommSeen : Bool := FALSE;
+      CommHealthy : Bool := FALSE;
+      CommLost : Bool := FALSE;
+      HeartbeatChanged : Bool := FALSE;
+      HeartbeatAge : Time := T#0MS;
+      ActiveTimeout : Time := T#60S;
    END_VAR
 
    VAR
-      previousHeartbeat : Word;
+      previousHeartbeat : Word := W#16#0000;
       watchdogTimer : TON_TIME;
    END_VAR
 

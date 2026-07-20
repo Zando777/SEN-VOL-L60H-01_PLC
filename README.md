@@ -13,8 +13,8 @@ automation project.
 ## Repository contents
 
 - `plc/io-test/` — current commissioning I/O-test SCL sources
-- `plc/production/` — production sequencer/watchdog development sources; not yet
-  approved or downloaded
+- `plc/production/` — production sequencer, watchdog, instance DB and Modbus
+  development sources; not yet approved or downloaded
 - `tools/io_test_gui.py` — Modbus GUI for pressure telemetry, safety state and
   independent output testing
 - `tools/computebox_sim.py` — command-line compute-box simulator
