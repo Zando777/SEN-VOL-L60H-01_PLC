@@ -1,0 +1,108 @@
+FUNCTION "FC_ProductionIOPack" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Read-only packing of verified physical inputs, Q image and F-RQ readbacks.
+// This function does not write any physical output and does not bypass F-LAD.
+   VAR_TEMP
+      outputImage : Word;
+      relayReadback : Word;
+      requestImage : Word;
+      outputMismatch : Word;
+      pressureBands : Word;
+   END_VAR
+BEGIN
+   "ProductionIOData".SafeOK := "Main_Safety_RTG1_DB".SafeOK;
+   "ProductionIOData".EstopSafe := "Main_Safety_RTG1_DB".estop_safe;
+   "ProductionIOData".RemoteEstopCh1 := "RemEstop_1";
+   "ProductionIOData".RemoteEstopCh2 := "RemEstop_2";
+   "ProductionIOData".RemoteAck := "Rem_Ack";
+   "ProductionIOData".MCU_Disable := "MCU_Disable";
+   "ProductionIOData".AM_Disable := "AM_Disable";
+   "ProductionIOData".Park_Disable := "Park_Disable";
+   "ProductionIOData".EstopBrake_Disable := "Ebrake_Disable";
+
+   // Compact production image. Bits 0..9 match HR48; bit 10 is the
+   // complementary parking-lock output/readback diagnostic.
+   #outputImage := W#16#0;
+   #outputImage.%X0 := "MainPwr_Sw";
+   #outputImage.%X1 := "MCU_Enable";
+   #outputImage.%X2 := "AM_Relays";
+   #outputImage.%X3 := "Ign_R";
+   #outputImage.%X4 := "Ign_15_54";
+   #outputImage.%X5 := "Ign_DR";
+   #outputImage.%X6 := "Ign_50";
+   // Confirmed machine semantics: energized E-stop solenoid = brake applied.
+   #outputImage.%X7 := "Sol_Estop";
+   #outputImage.%X8 := "Sol_Estop_2";
+   #outputImage.%X9 := "ParkBrake_Unlock";
+   #outputImage.%X10 := "ParkBrake_Lock";
+   "ProductionIOData".OutputImage := #outputImage;
+
+   // F-RQ bit 0 from the input byte of each heavy-relay module. These physical
+   // addresses were exercised by the commissioning I/O-test project.
+   #relayReadback := W#16#0;
+   #relayReadback.%X0 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 60, bitOffset := 0); // Main power
+   #relayReadback.%X1 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 59, bitOffset := 0); // MCU enable
+   #relayReadback.%X3 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 5, bitOffset := 0);  // Ignition R
+   #relayReadback.%X4 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 6, bitOffset := 0);  // Ignition 15/54
+   #relayReadback.%X5 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 55, bitOffset := 0); // Ignition DR
+   #relayReadback.%X6 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 56, bitOffset := 0); // Starter 50
+   #relayReadback.%X9 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 58, bitOffset := 0); // Park unlock
+   #relayReadback.%X10 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 57, bitOffset := 0); // Park lock
+   "ProductionIOData".RelayReadback := #relayReadback;
+
+   #requestImage := W#16#0;
+   #requestImage.%X0 := "ProductionSeq_DB".Req_MainPwr;
+   #requestImage.%X1 := "ProductionSeq_DB".Req_MCU;
+   #requestImage.%X2 := "ProductionSeq_DB".Req_AMRelays;
+   #requestImage.%X3 := "ProductionSeq_DB".Req_IgnR;
+   #requestImage.%X4 := "ProductionSeq_DB".Req_Ign1554;
+   #requestImage.%X5 := "ProductionSeq_DB".Req_IgnDR;
+   #requestImage.%X6 := "ProductionSeq_DB".Req_Ign50;
+   #requestImage.%X7 := "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
+   #requestImage.%X8 := "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
+   #requestImage.%X9 := "ProductionSeq_DB".Req_ParkUnlock;
+
+   // Request/Q mismatches for every driven signal. For heavy relays, also
+   // compare Q against the independently read F-RQ module contact feedback.
+   #outputMismatch := (#requestImage XOR #outputImage) AND W#16#03FF;
+   #outputMismatch.%X0 := #outputMismatch.%X0 OR (#outputImage.%X0 <> #relayReadback.%X0);
+   #outputMismatch.%X1 := #outputMismatch.%X1 OR (#outputImage.%X1 <> #relayReadback.%X1);
+   #outputMismatch.%X3 := #outputMismatch.%X3 OR (#outputImage.%X3 <> #relayReadback.%X3);
+   #outputMismatch.%X4 := #outputMismatch.%X4 OR (#outputImage.%X4 <> #relayReadback.%X4);
+   #outputMismatch.%X5 := #outputMismatch.%X5 OR (#outputImage.%X5 <> #relayReadback.%X5);
+   #outputMismatch.%X6 := #outputMismatch.%X6 OR (#outputImage.%X6 <> #relayReadback.%X6);
+   #outputMismatch.%X9 := #outputMismatch.%X9 OR (#outputImage.%X9 <> #relayReadback.%X9);
+   // Park-lock is complementary to unlock and has no separate sequencer request.
+   #outputMismatch.%X10 := (#outputImage.%X10 <> #relayReadback.%X10);
+   "ProductionIOData".OutputMismatch := #outputMismatch;
+
+   // Normal-band diagnostics plus near-zero shuttle indications used by the
+   // automatic two-channel E-stop brake test.
+   #pressureBands := W#16#0;
+   #pressureBands.%X0 := ("PressData".Shuttle1_bar >= 30.0) AND ("PressData".Shuttle1_bar <= 50.0);
+   #pressureBands.%X1 := ("PressData".Estop1_bar >= 120.0) AND ("PressData".Estop1_bar <= 150.0);
+   #pressureBands.%X2 := ("PressData".Shuttle2_bar >= 30.0) AND ("PressData".Shuttle2_bar <= 50.0);
+   #pressureBands.%X3 := ("PressData".Estop2_bar >= 120.0) AND ("PressData".Estop2_bar <= 150.0);
+   #pressureBands.%X4 := ("PressData".Prop_bar >= 120.0) AND ("PressData".Prop_bar <= 150.0);
+   #pressureBands.%X8 := "PressData".Shuttle1_bar <= 5.0;
+   #pressureBands.%X9 := "PressData".Shuttle2_bar <= 5.0;
+   "ProductionIOData".PressureBandBits := #pressureBands;
+
+   // Semantic feedback consumed by the state machine.
+   "ProductionSeq_DB".AutoMode := "AutoMan_Sw1";
+   "ProductionSeq_DB".Abort := (NOT "ProductionIOData".EstopSafe) OR "PressData".PressTrip;
+   "ProductionSeq_DB".SafetyTripActive := "ProductionSeq_DB".Abort;
+   "ProductionSeq_DB".PressBuildOK := "PressData".PressBuildOK;
+   "ProductionSeq_DB".ShuttleBuildOK := "Seq_DB".ShuttleBuildOK;
+   "ProductionSeq_DB".Shuttle1_bar := "PressData".Shuttle1_bar;
+   "ProductionSeq_DB".Shuttle2_bar := "PressData".Shuttle2_bar;
+   "ProductionSeq_DB".Estop1_bar := "PressData".Estop1_bar;
+   "ProductionSeq_DB".Estop2_bar := "PressData".Estop2_bar;
+   "ProductionSeq_DB".Prop_bar := "PressData".Prop_bar;
+   "ProductionSeq_DB".PressureSensorFault := "ProductionIOData".PressureFaultBits <> W#16#0;
+   "ProductionSeq_DB".Rq_EstopBrakeCh1Applied := #outputImage.%X7;
+   "ProductionSeq_DB".Rq_EstopBrakeCh2Applied := #outputImage.%X8;
+   "ProductionSeq_DB".Rq_ParkUnlock := #relayReadback.%X9;
+   "ProductionSeq_DB".Rq_ParkLock := #relayReadback.%X10;
+END_FUNCTION

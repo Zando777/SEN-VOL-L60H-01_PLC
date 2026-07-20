@@ -95,9 +95,25 @@ A static writable bit alone is not accepted as proof of communication.
 | 7 | E-stop brake channel 1 applied |
 | 8 | E-stop brake channel 2 applied |
 | 9 | Parking-brake unlock |
+| 10 | Parking-brake lock feedback (Q/F-RQ diagnostics only) |
 
-The same bit order is used for request, Q, F-RQ and mismatch words. A readback
-bit is valid only after its physical source and polarity have been verified.
+The same bit order is used for request, Q, F-RQ and mismatch words. A/M and the
+two E-stop solenoids do not have F-RQ modules; their F-RQ bits remain zero.
+Parking lock is complementary to unlock and therefore has no independent
+sequencer request bit. A readback bit is valid only after its physical source
+and polarity have been verified.
+
+### HR43 pressure-band flags
+
+| Bit | Meaning |
+|---:|---|
+| 0 | Shuttle 1 in 30–50 bar rebuild band |
+| 1 | E-stop 1 in 120–150 bar supply band |
+| 2 | Shuttle 2 in 30–50 bar rebuild band |
+| 3 | E-stop 2 in 120–150 bar supply band |
+| 4 | Prop in 120–150 bar supply band |
+| 8 | Shuttle 1 at or below 5 bar |
+| 9 | Shuttle 2 at or below 5 bar |
 
 ### HR52 safety flags
 
@@ -115,4 +131,3 @@ bit is valid only after its physical source and polarity have been verified.
 | 9 | E-stop brake disable |
 | 10 | Sequencer Abort |
 | 11 | SafetyTripActive |
-

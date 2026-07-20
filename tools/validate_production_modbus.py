@@ -7,9 +7,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 SOURCE = ROOT / "plc" / "production" / "ProductionModbus.scl"
+IO_SOURCE = ROOT / "plc" / "production" / "ProductionIO.scl"
 DOC = ROOT / "docs" / "production_modbus_v1.md"
 
 text = SOURCE.read_text(encoding="utf-8")
+io_text = IO_SOURCE.read_text(encoding="utf-8")
 doc = DOC.read_text(encoding="utf-8")
 
 for forbidden in ("Ign30", "Ign_30", "Aux", "Rem_Arm", "SimMode"):
@@ -42,6 +44,24 @@ required_source = (
 for fragment in required_source:
     if fragment not in text:
         raise SystemExit(f"required Modbus invariant missing: {fragment}")
+
+required_io = (
+    'FUNCTION "FC_ProductionIOPack" : Void',
+    '"ProductionIOData".EstopSafe := "Main_Safety_RTG1_DB".estop_safe;',
+    '"ProductionSeq_DB".AutoMode := "AutoMan_Sw1";',
+    '"ProductionSeq_DB".Abort := (NOT "ProductionIOData".EstopSafe) OR "PressData".PressTrip;',
+    '#outputImage.%X7 := "Sol_Estop";',
+    '#outputImage.%X8 := "Sol_Estop_2";',
+    'byteOffset := 60',
+    'byteOffset := 59',
+    'byteOffset := 58',
+    'byteOffset := 57',
+    '"ProductionSeq_DB".Rq_ParkUnlock := #relayReadback.%X9;',
+    '"ProductionSeq_DB".Rq_ParkLock := #relayReadback.%X10;',
+)
+for fragment in required_io:
+    if fragment not in io_text:
+        raise SystemExit(f"required production I/O invariant missing: {fragment}")
 
 # Each defined command/status bit must have one inbound use outside comments.
 for bit in range(11):
