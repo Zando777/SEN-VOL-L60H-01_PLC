@@ -39,7 +39,8 @@ outputs can be tested without cancelling the run-position ignition requests.
 The GUI automatically records each session under
 `Documents/VolvoL60H/logs/YYYY-MM-DD/` as three CSV files: continuous telemetry,
 every outgoing Modbus write, and state/fault/operator events. CSV writes run on
-a background thread and do not block Modbus polling.
+a background thread and do not block Modbus polling. `ENABLE CSV LOGGING` can
+flush/close the current session and start a fresh Run ID when enabled again.
 
 See [`docs/io_test_current_state.md`](docs/io_test_current_state.md) for the
 complete register map, safety behavior and current deployment status.

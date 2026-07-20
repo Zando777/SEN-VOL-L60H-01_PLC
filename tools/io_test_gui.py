@@ -231,6 +231,7 @@ class TestPanel:
         self.crank_stage_started = 0.0
         self.armed = tk.BooleanVar(value=False)
         self.allow_manual_mode = tk.BooleanVar(value=False)
+        self.logging_enabled = tk.BooleanVar(value=True)
         self.connection_text = tk.StringVar(value="Disconnected")
         self.active_text = tk.StringVar(value="PLC active manual mask: 0x0000")
         self.telemetry_text = tk.StringVar(value="PLC telemetry: waiting")
@@ -251,6 +252,7 @@ class TestPanel:
             self.logger = SessionCsvLogger(PLC_IP)
             self.logging_text.set(f"CSV logging: {self.logger.log_dir}")
         except Exception as exc:
+            self.logging_enabled.set(False)
             self.logging_text.set(f"CSV LOG ERROR: {exc}")
         self._build()
         self._log_event("INFO", "GUI_STARTED", "I/O test GUI started")
@@ -258,24 +260,45 @@ class TestPanel:
         self.root.after(100, self.poll)
 
     def _build(self):
-        outer = ttk.Frame(self.root, padding=12)
-        outer.grid(sticky="nsew")
+        viewport = ttk.Frame(self.root)
+        viewport.grid(sticky="nsew")
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
+        viewport.columnconfigure(0, weight=1)
+        viewport.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(viewport, highlightthickness=0)
+        vertical_scroll = ttk.Scrollbar(viewport, orient="vertical", command=canvas.yview)
+        horizontal_scroll = ttk.Scrollbar(viewport, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=vertical_scroll.set, xscrollcommand=horizontal_scroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vertical_scroll.grid(row=0, column=1, sticky="ns")
+        horizontal_scroll.grid(row=1, column=0, sticky="ew")
+
+        outer = ttk.Frame(canvas, padding=12)
+        canvas_window = canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def resize_canvas(event):
+            requested = outer.winfo_reqwidth()
+            canvas.itemconfigure(canvas_window, width=max(event.width, requested))
+
+        canvas.bind("<Configure>", resize_canvas)
+        canvas.bind_all("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"))
 
         ttk.Label(outer, text="COMMISSIONING I/O TEST", font=("Segoe UI", 16, "bold")).grid(
-            row=0, column=0, columnspan=4, sticky="w"
+            row=0, column=0, columnspan=5, sticky="w"
         )
         ttk.Label(
             outer,
             text="Multiple output toggles may be active together. ARM and a live heartbeat are required.",
             foreground="#8a3b00",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        ).grid(row=1, column=0, columnspan=5, sticky="w", pady=(0, 8))
 
         ttk.Label(outer, textvariable=self.connection_text).grid(row=2, column=0, sticky="w")
         ttk.Label(outer, textvariable=self.active_text).grid(row=2, column=1, sticky="w")
         ttk.Label(outer, textvariable=self.telemetry_text).grid(row=2, column=2, sticky="w")
-        ttk.Button(outer, text="ALL OFF / DISARM", command=self.all_off).grid(row=2, column=3, sticky="e")
+        ttk.Button(outer, text="ALL OFF / DISARM", command=self.all_off).grid(row=2, column=4, sticky="e")
 
         arm = ttk.Checkbutton(outer, text="ARM OUTPUT TEST", variable=self.armed, command=self.arm_changed)
         arm.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 10))
@@ -285,9 +308,15 @@ class TestPanel:
             variable=self.allow_manual_mode,
             command=self.manual_mode_changed,
         ).grid(row=3, column=2, columnspan=2, sticky="w", pady=(8, 10))
+        ttk.Checkbutton(
+            outer,
+            text="ENABLE CSV LOGGING",
+            variable=self.logging_enabled,
+            command=self.logging_changed,
+        ).grid(row=3, column=4, sticky="e", pady=(8, 10))
 
         crank_sequence = ttk.LabelFrame(outer, text="Production crank sequence test", padding=8)
-        crank_sequence.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(0, 10))
+        crank_sequence.grid(row=4, column=0, columnspan=5, sticky="ew", pady=(0, 10))
         ttk.Button(crank_sequence, text="RUN CRANK SEQUENCE", command=self.start_crank_sequence).grid(
             row=0, column=0, padx=(0, 8)
         )
@@ -300,7 +329,7 @@ class TestPanel:
         ttk.Label(crank_sequence, textvariable=self.crank_sequence_text).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         out_frame = ttk.LabelFrame(outer, text="Independent output toggles", padding=8)
-        out_frame.grid(row=5, column=0, columnspan=4, sticky="nsew")
+        out_frame.grid(row=5, column=0, columnspan=5, sticky="nsew")
         for row, (selector, label, detail, output_bits) in enumerate(OUTPUTS):
             button = ttk.Button(out_frame, text="OFF", width=8, command=lambda s=selector: self.toggle(s))
             button.grid(row=row, column=0, padx=(0, 8), pady=2)
@@ -311,26 +340,37 @@ class TestPanel:
             self.buttons[selector] = button
             self.output_indicators[selector] = (indicator, output_bits)
 
-        pressure_frame = ttk.LabelFrame(outer, text="Pressure telemetry", padding=8)
-        pressure_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=(10, 0), padx=(0, 5))
+        lower_frame = ttk.Frame(outer)
+        lower_frame.grid(row=6, column=0, columnspan=5, sticky="nsew", pady=(10, 0))
+        for column in range(3):
+            lower_frame.columnconfigure(column, weight=1)
+
+        pressure_frame = ttk.LabelFrame(lower_frame, text="Pressure telemetry", padding=8)
+        pressure_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         for row, (name, var) in enumerate(zip(PRESSURES, self.pressure_vars)):
             ttk.Label(pressure_frame, text=name, width=14).grid(row=row, column=0, sticky="w")
             ttk.Label(pressure_frame, textvariable=var, width=24).grid(row=row, column=1, sticky="e")
 
-        status_frame = ttk.LabelFrame(outer, text="PLC safety/status", padding=8)
-        status_frame.grid(row=6, column=2, columnspan=2, sticky="nsew", pady=(10, 0), padx=(5, 0))
-        for row, (name, var) in enumerate(self.status_vars.items()):
-            ttk.Label(status_frame, text=name, width=18).grid(row=row, column=0, sticky="w")
+        status_frame = ttk.LabelFrame(lower_frame, text="PLC safety/status", padding=8)
+        status_frame.grid(row=0, column=1, sticky="nsew", padx=5)
+        status_rows = (len(self.status_vars) + 1) // 2
+        for index, (name, var) in enumerate(self.status_vars.items()):
+            row = index % status_rows
+            column = (index // status_rows) * 2
+            ttk.Label(status_frame, text=name, width=20).grid(row=row, column=column, sticky="w", padx=(0, 3))
             indicator = tk.Label(status_frame, textvariable=var, width=9, bg="#d9d9d9", relief="sunken")
-            indicator.grid(row=row, column=1, sticky="e", pady=1)
+            indicator.grid(row=row, column=column + 1, sticky="e", pady=1, padx=(0, 8))
             self.status_indicators[name] = indicator
 
-        detail_frame = ttk.LabelFrame(outer, text="SafeOK source values (direct PLC/watch-table values)", padding=8)
-        detail_frame.grid(row=6, column=4, sticky="nsew", pady=(10, 0), padx=(5, 0))
-        for row, (name, var) in enumerate(self.safety_detail_vars.items()):
-            ttk.Label(detail_frame, text=name, width=22).grid(row=row, column=0, sticky="w")
+        detail_frame = ttk.LabelFrame(lower_frame, text="SafeOK source values", padding=8)
+        detail_frame.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
+        detail_rows = (len(self.safety_detail_vars) + 1) // 2
+        for index, (name, var) in enumerate(self.safety_detail_vars.items()):
+            row = index % detail_rows
+            column = (index // detail_rows) * 2
+            ttk.Label(detail_frame, text=name, width=22).grid(row=row, column=column, sticky="w", padx=(0, 3))
             indicator = tk.Label(detail_frame, textvariable=var, width=9, bg="#d9d9d9", relief="sunken")
-            indicator.grid(row=row, column=1, sticky="e", pady=1)
+            indicator.grid(row=row, column=column + 1, sticky="e", pady=1, padx=(0, 8))
             self.status_indicators[name] = indicator
 
         ttk.Label(
@@ -339,7 +379,7 @@ class TestPanel:
                   "whenever the safety program is active. Both E-stop solenoids operate together."),
             wraplength=760,
             foreground="#555555",
-        ).grid(row=7, column=0, columnspan=4, sticky="w", pady=(10, 0))
+        ).grid(row=7, column=0, columnspan=5, sticky="w", pady=(10, 0))
         ttk.Label(outer, textvariable=self.logging_text, foreground="#555555").grid(
             row=8, column=0, columnspan=5, sticky="w", pady=(6, 0)
         )
@@ -381,6 +421,32 @@ class TestPanel:
             f"Outputs-in-M permission requested={self.allow_manual_mode.get()}",
         )
         self.write_controls(source="manual_mode_changed")
+
+    def logging_changed(self):
+        if self.logging_enabled.get():
+            if self.logger is not None:
+                return
+            try:
+                self.logger = SessionCsvLogger(PLC_IP)
+                self.logging_text.set(
+                    f"CSV logging: {self.logger.log_dir} | run {self.logger.run_id}"
+                )
+                self._log_event("INFO", "LOGGING_ENABLED", "CSV logging enabled")
+            except Exception as exc:
+                self.logger = None
+                self.logging_enabled.set(False)
+                self.logging_text.set(f"CSV LOG ERROR: {exc}")
+                messagebox.showerror("CSV logging error", str(exc))
+        else:
+            if self.logger is not None:
+                logger = self.logger
+                self._log_event("INFO", "LOGGING_DISABLED", "CSV logging disabled by operator")
+                logger.close()
+                error = logger.error
+                self.logger = None
+                self.logging_text.set(f"CSV logging: OFF{f' | {error}' if error else ''}")
+            else:
+                self.logging_text.set("CSV logging: OFF")
 
     def toggle(self, selector: int):
         if not self.armed.get():
