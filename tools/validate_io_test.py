@@ -27,10 +27,28 @@ for fragment in required_scl:
 if '#requestMask.%X8 AND NOT #requestMask.%X9' in SCL:
     raise SystemExit("retired independent Park Lock command still gates Park Brake")
 
+crank_plc = SCL.split("IF #crankActive THEN", 1)[1].split(
+    "ELSE\n         // Manual test mode", 1
+)[0]
+for fragment in (
+    '"Seq_DB".Req_MainPwr := #requestMask.%X0;',
+    '"Seq_DB".Req_MCU := #requestMask.%X1;',
+    '"Seq_DB".Req_AMRelays := #requestMask.%X2;',
+    '"Seq_DB".Req_EbrakeRel := #requestMask.%X10;',
+):
+    if fragment not in crank_plc:
+        raise SystemExit(f"crank no longer preserves a non-ignition request: {fragment}")
+if '"Seq_DB".Req_ParkUnlock := FALSE;' in crank_plc:
+    raise SystemExit("crank contains a parking-brake OFF assignment")
+
 required_gui = (
     '(9, "Park brake", "ON = brake enabled',
     "PARK_BRAKE_SELECTOR = 9",
     "PARK_BRAKE_DEFAULT_MASK = 1 << (PARK_BRAKE_SELECTOR - 1)",
+    "CRANK_RETAINED_MASK = 0x0007 | PARK_BRAKE_DEFAULT_MASK | ESTOP_SELECTOR_MASK",
+    "self.selected_mask & CRANK_RETAINED_MASK",
+    ") | PARK_BRAKE_DEFAULT_MASK",
+    'text="SAFE DEFAULTS / DISARM"',
     "self.selected_mask |= PARK_BRAKE_DEFAULT_MASK",
     "ESTOP_SELECTOR_MASK = 1 << (ESTOP_SELECTOR - 1)",
     "self.selected_mask |= ESTOP_SELECTOR_MASK",
@@ -47,6 +65,13 @@ required_gui = (
 for fragment in required_gui:
     if fragment not in GUI:
         raise SystemExit(f"I/O-test GUI parking-brake invariant missing: {fragment}")
+
+crank_gui = GUI.split("def start_crank_sequence(self):", 1)[1].split(
+    "def cancel_crank_sequence", 1
+)[0]
+for forbidden in ("self.selected_mask = 0", "self.selected_mask &= 0x0007"):
+    if forbidden in crank_gui:
+        raise SystemExit(f"crank destructively clears retained outputs: {forbidden}")
 
 if '(10, "Park lock"' in GUI or '(10, "Park Lock"' in GUI:
     raise SystemExit("retired Park Lock GUI button remains")

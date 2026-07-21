@@ -83,10 +83,18 @@ BEGIN
    IF #active THEN
       IF #crankActive THEN
          // Preserve the three pre-start support-output states retained in HR0 by
-         // the GUI. The crank stages below control only the ignition-key outputs.
+         // the GUI. Park Brake defaults ON throughout crank; state 17 inherits
+         // the GUI's forced-ON bit and permits an explicit later OFF command.
          "Seq_DB".Req_MainPwr := #requestMask.%X0;
          "Seq_DB".Req_MCU := #requestMask.%X1;
          "Seq_DB".Req_AMRelays := #requestMask.%X2;
+         // Crank never changes the E-stop output request. Auto retains the GUI
+         // setting; Manual enforces the verified ON/disengaged default.
+         IF "AutoMan_Sw1" THEN
+            "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+         ELSE
+            "Seq_DB".Req_EbrakeRel := TRUE;
+         END_IF;
          "Seq_DB".State := WORD_TO_INT(#crankStage);
          CASE WORD_TO_INT(#crankStage) OF
          14: // CRANK sequence: IGNACCESSORY (production state 6)
@@ -107,13 +115,6 @@ BEGIN
             // while allowing the remaining independent outputs to be tested.
             // Legacy PLC tag name: verified machine behavior is TRUE = park brake ON.
             "Seq_DB".Req_ParkUnlock := #requestMask.%X8;
-            IF "AutoMan_Sw1" THEN
-               "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
-            ELSE
-               // Verified polarity: output ON = brakes disengaged. Manual keeps
-               // both E-stop brake outputs energized/disengaged.
-               "Seq_DB".Req_EbrakeRel := TRUE;
-            END_IF;
          END_CASE;
       ELSE
          // Manual test mode: every bit is independent, so combinations are allowed.

@@ -90,6 +90,9 @@ PARK_BRAKE_SELECTOR = 9
 PARK_BRAKE_DEFAULT_MASK = 1 << (PARK_BRAKE_SELECTOR - 1)
 ESTOP_SELECTOR = 11
 ESTOP_SELECTOR_MASK = 1 << (ESTOP_SELECTOR - 1)
+# Cranking may alter only the four ignition-key selectors. Preserve every
+# independent non-ignition request; Park Brake is additionally forced ON.
+CRANK_RETAINED_MASK = 0x0007 | PARK_BRAKE_DEFAULT_MASK | ESTOP_SELECTOR_MASK
 PARK_BRAKE_CONTROL_Q_BIT = 8
 PARK_BRAKE_COMPLEMENT_Q_BIT = 9
 PARK_BRAKE_CONTROL_RQ_BIT = 5
@@ -101,7 +104,7 @@ CRANK_STAGES = (
     (14, 1.0, "IGNACCESSORY: R (1 s)"),
     (15, 3.0, "IGNRUN / glow: R + 15/54 + DR (3 s)"),
     (16, 10.0, "CRANK: DR + starter 50 (10 s maximum)"),
-    (17, None, "STARTER OFF: run position — press ALL OFF when finished"),
+    (17, None, "STARTER OFF: run position — use SAFE DEFAULTS when finished"),
 )
 
 
@@ -329,7 +332,7 @@ class TestPanel:
         ttk.Label(outer, textvariable=self.connection_text).grid(row=2, column=0, sticky="w")
         ttk.Label(outer, textvariable=self.active_text).grid(row=2, column=1, sticky="w")
         ttk.Label(outer, textvariable=self.telemetry_text).grid(row=2, column=2, sticky="w")
-        ttk.Button(outer, text="ALL OFF / DISARM", command=self.all_off).grid(row=2, column=4, sticky="e")
+        ttk.Button(outer, text="SAFE DEFAULTS / DISARM", command=self.all_off).grid(row=2, column=4, sticky="e")
 
         arm = ttk.Checkbutton(outer, text="ARM OUTPUT TEST", variable=self.armed, command=self.arm_changed)
         arm.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 10))
@@ -497,7 +500,7 @@ class TestPanel:
                 messagebox.showinfo(
                     "Ignition controlled by sequence",
                     "R, 15/54, DR and Starter 50 are controlled by the crank sequence. "
-                    "Use ABORT CRANK or ALL OFF / DISARM to remove the run-position ignition requests.",
+                    "Use ABORT CRANK or SAFE DEFAULTS / DISARM to remove the run-position ignition requests.",
                 )
                 return
         bit = selector - 1
@@ -521,7 +524,7 @@ class TestPanel:
         self.crank_stage = 0
         self.armed.set(False)
         self.allow_manual_mode.set(False)
-        self._log_event("WARNING", "ALL_OFF", "ALL OFF / DISARM selected")
+        self._log_event("WARNING", "SAFE_DEFAULTS", "SAFE DEFAULTS / DISARM selected")
         self.write_controls(source="all_off")
         self.refresh_buttons()
 
@@ -533,16 +536,20 @@ class TestPanel:
             "Run production crank sequence",
             "WARNING: This commands the real ignition and starter outputs and may start the engine.\n\n"
             "Only the ignition outputs are sequenced. Main Power, MCU and A/M relays retain "
-            "their current ON/OFF settings throughout the sequence.\n\n"
+            "their current ON/OFF settings throughout the sequence. The Park Brake is forced ON "
+            "before cranking and remains ON when state 17 is reached.\n\n"
             "Confirm the machine is secured, the area is clear, brakes are engaged, and you are ready "
             "to press ENGINE RUNNING / STOP STARTER as soon as the engine catches.",
         )
         if not ok:
             return
         self.crank_sequence_running = True
-        # Preserve only the three power-support settings. The PLC passes these
-        # retained HR0 bits through unchanged while sequencing ignition.
-        self.selected_mask &= 0x0007
+        # Preserve every non-ignition request and force the parking brake ON for
+        # the complete crank. State 17 inherits these bits; the operator may
+        # then change independent outputs explicitly.
+        self.selected_mask = (
+            self.selected_mask & CRANK_RETAINED_MASK
+        ) | PARK_BRAKE_DEFAULT_MASK
         self.crank_stage_index = 0
         self.crank_stage_started = time.monotonic()
         self.crank_stage = CRANK_STAGES[0][0]

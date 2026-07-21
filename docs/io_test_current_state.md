@@ -79,6 +79,16 @@ and Manual; it can still be switched OFF explicitly after arming. In Manual,
 both E-stop brake outputs are held ON/energized, which is the verified
 disengaged state. Their OFF/resting state engages the E-stop brakes.
 
+Starting the GUI crank sequence preserves every non-ignition request: Main
+Power, MCU, A/M and the mode-valid E-stop setting. It explicitly forces Park
+Brake ON. The crank controller changes only Ignition R, 15/54, DR and Starter
+50. Park Brake remains ON through states 14–16 and when state 17 is entered; it
+may then be switched OFF manually.
+
+The former `ALL OFF / DISARM` label is now `SAFE DEFAULTS / DISARM`, because a
+disarmed controller intentionally retains the safe parking-brake default and,
+in Manual, the E-stop outputs remain ON/disengaged.
+
 If an F-AI channel displays zero unexpectedly:
 
 1. Monitor its raw tag, the corresponding `PressData` value and

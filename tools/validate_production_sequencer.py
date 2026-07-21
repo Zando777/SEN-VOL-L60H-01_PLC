@@ -43,6 +43,15 @@ for fragment in required:
     if fragment not in text:
         raise SystemExit(f"required invariant missing: {fragment}")
 
+# The verified legacy park request is TRUE = brake ON. It may turn FALSE only
+# when deliberately disabling the brake for driving or holding it off during a
+# controlled communication-loss stop; never during startup/crank.
+if text.count("#Req_ParkUnlock := FALSE;") != 3:
+    raise SystemExit("unexpected production parking-brake OFF assignment added")
+pre_drive = text.split("#ST_PARK_UNLOCK:", 1)[0]
+if "#Req_ParkUnlock := FALSE;" in pre_drive:
+    raise SystemExit("production startup/crank can turn the parking brake OFF")
+
 for fragment in (
     'DATA_BLOCK "ProductionSeq_DB"',
     '"FB_ProductionSequencer"',
