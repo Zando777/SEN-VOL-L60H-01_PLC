@@ -293,10 +293,11 @@ The writer runs in a background thread, flushes at least once per second and
 shows its directory/run ID or an error on the GUI. Failed Modbus polls create
 explicit disconnected telemetry rows instead of silent gaps.
 
-`ENABLE CSV LOGGING` controls recording. Turning it off flushes and closes all
-three current files; enabling it again starts a new session and Run ID. The GUI
-uses compact multi-column status panels plus vertical and horizontal scrolling
-so all values remain accessible at smaller RDP resolutions.
+CSV logging defaults OFF when the GUI starts. `ENABLE CSV LOGGING` begins
+recording and creates a new session/Run ID. Turning it off flushes and closes
+all three current files; enabling it again starts another session. The GUI uses
+compact multi-column status panels plus vertical and horizontal scrolling so
+all values remain accessible at smaller RDP resolutions.
 
 ## Production-project status
 

@@ -265,11 +265,11 @@ class TestPanel:
         self.crank_stage_started = 0.0
         self.armed = tk.BooleanVar(value=False)
         self.allow_manual_mode = tk.BooleanVar(value=False)
-        self.logging_enabled = tk.BooleanVar(value=True)
+        self.logging_enabled = tk.BooleanVar(value=False)
         self.connection_text = tk.StringVar(value="Disconnected")
         self.active_text = tk.StringVar(value="PLC active manual mask: 0x0000")
         self.telemetry_text = tk.StringVar(value="PLC telemetry: waiting")
-        self.logging_text = tk.StringVar(value="CSV logging: starting")
+        self.logging_text = tk.StringVar(value="CSV logging: OFF")
         self.crank_sequence_text = tk.StringVar(value="Crank sequence: idle")
         self.status_vars = {name: tk.StringVar(value="—") for name, _, _ in STATUS_FIELDS}
         self.safety_detail_vars = {name: tk.StringVar(value="—") for name, _, _ in SAFETY_DETAIL_FIELDS}
@@ -282,12 +282,6 @@ class TestPanel:
         self.logger = None
         self.last_event_values = {}
         self.last_written_controls = {}
-        try:
-            self.logger = SessionCsvLogger(PLC_IP)
-            self.logging_text.set(f"CSV logging: {self.logger.log_dir}")
-        except Exception as exc:
-            self.logging_enabled.set(False)
-            self.logging_text.set(f"CSV LOG ERROR: {exc}")
         self._build()
         self._log_event("INFO", "GUI_STARTED", "I/O test GUI started")
         self.root.protocol("WM_DELETE_WINDOW", self.close)

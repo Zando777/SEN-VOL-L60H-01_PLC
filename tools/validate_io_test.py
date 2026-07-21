@@ -52,6 +52,8 @@ required_gui = (
     "self.selected_mask |= PARK_BRAKE_DEFAULT_MASK",
     "ESTOP_SELECTOR_MASK = 1 << (ESTOP_SELECTOR - 1)",
     "self.selected_mask |= ESTOP_SELECTOR_MASK",
+    "self.logging_enabled = tk.BooleanVar(value=False)",
+    'self.logging_text = tk.StringVar(value="CSV logging: OFF")',
     "Q49.5",
     "Q49.4",
     "def raw_to_ma(raw: int) -> float:",
@@ -72,6 +74,9 @@ crank_gui = GUI.split("def start_crank_sequence(self):", 1)[1].split(
 for forbidden in ("self.selected_mask = 0", "self.selected_mask &= 0x0007"):
     if forbidden in crank_gui:
         raise SystemExit(f"crank destructively clears retained outputs: {forbidden}")
+
+if GUI.count("self.logger = SessionCsvLogger(PLC_IP)") != 1:
+    raise SystemExit("CSV logger must be created only by the explicit enable action")
 
 if '(10, "Park lock"' in GUI or '(10, "Park Lock"' in GUI:
     raise SystemExit("retired Park Lock GUI button remains")
