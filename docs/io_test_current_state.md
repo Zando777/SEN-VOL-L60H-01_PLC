@@ -100,13 +100,16 @@ The following remote safety signals remain and must not be removed:
 | Ignition 15/54 | `Ign_15_54` | `%Q49.1` |
 | Ignition DR | `Ign_DR` | `%Q49.2` |
 | Starter 50 | `Ign_50` | `%Q49.3` |
-| Park unlock | `ParkBrake_Unlock` | `%Q49.5` |
-| Park lock | `ParkBrake_Lock` | `%Q49.4` |
+| Park brake (single GUI command) | Legacy control tag `ParkBrake_Unlock` | `%Q49.5` |
+| Park brake complementary feedback | Legacy tag `ParkBrake_Lock` | `%Q49.4` |
 | E-stop solenoid 1 | `Sol_Estop` | `%Q0.0` |
 | E-stop solenoid 2 | `Sol_Estop_2` | `%Q0.1` |
 
-Multiple GUI output toggles may be active simultaneously. Park Lock and Park
-Unlock are intentionally mutually exclusive. Both E-stop solenoid outputs are
+Multiple GUI output toggles may be active simultaneously. The parking brake has
+one semantic toggle: **ON means brake enabled; OFF means brake disabled**. The
+legacy PLC tag names do not describe the observed machine behavior, so they are
+shown only as physical-channel diagnostics. HR0 bit 9, formerly the separate
+Park Lock command, is reserved and ignored. Both E-stop solenoid outputs are
 controlled together.
 
 The `%Q49` F-DQ command outputs drive downstream 5 A F-RQ relay modules. The GUI
@@ -140,7 +143,7 @@ The test project compiled after this change with **0 errors and 0 warnings**.
 
 | HR | Direction | Meaning |
 |---:|---|---|
-| 0 | GUI → PLC | Independent manual-output request mask |
+| 0 | GUI → PLC | Independent manual-output request mask; bit 8 = Park Brake ON, bit 9 reserved/ignored |
 | 1 | GUI → PLC | `16#A55A` arms the test; any other value disarms |
 | 2 | PLC → GUI | Active manual mask echo, otherwise zero |
 | 3 | PLC → GUI | Shuttle 1 pressure ×10 bar |
@@ -212,7 +215,7 @@ Press **ENGINE RUNNING / STOP STARTER** immediately when the engine catches.
 The starter is limited to ten seconds even if the button is not pressed.
 
 In stage 17, the sequence continues to hold R, 15/54 and DR in the run position.
-Main Power, MCU, A/M relays, park outputs and the E-stop/brake-solenoid pair may
+Main Power, MCU, A/M relays, the single Park Brake command and the E-stop/brake-solenoid pair may
 then be toggled without cancelling the sequence or removing ignition. The four
 manual ignition toggles are locked while the sequence owns them.
 

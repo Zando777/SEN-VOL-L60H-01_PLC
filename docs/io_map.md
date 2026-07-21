@@ -55,10 +55,17 @@ Channel → F‑RQ slot rule: F‑RQ slot = **6 + channel + 1**. (e.g. `%Q49.6` 
 | %Q49.1 | `Ign_15_54` | F‑RQ Ign 2 (8) | %I6 | ignition 15/54 (run) |
 | %Q49.2 | `Ign_DR` | F‑RQ Ign 3 (9) | %I55 | glow / DR |
 | %Q49.3 | `Ign_50` | F‑RQ Ign 4 (10) | %I56 | **starter (terminal 50)** |
-| %Q49.4 | `ParkBrake_Lock` | F‑RQ Park Lock (11) | %I57 | park brake engage |
-| %Q49.5 | `ParkBrake_Unlock` | F‑RQ Park Unlk (12) | %I58 | park brake release |
+| %Q49.4 | `ParkBrake_Lock` | F‑RQ Park Lock (11) | %I57 | legacy name; observed machine state is park brake disabled |
+| %Q49.5 | `ParkBrake_Unlock` | F‑RQ Park Unlk (12) | %I58 | legacy name; observed machine state is park brake enabled |
 | %Q49.6 | `MCU_Enable` | F‑RQ MCU PWR (13) | %I59 | **MRS MCU power** |
 | %Q49.7 | `MainPwr_Sw` | F‑RQ MAIN SWITCH (14) | %I60 | main power / P1 |
+
+The parking-brake tag and hardware-module names are retained for compatibility,
+but their semantic labels are inverted relative to the behavior observed on the
+machine during commissioning. The I/O-test interface therefore exposes one
+semantic command: **Park brake ON** drives the `%Q49.5` path; **Park brake OFF**
+removes it. `%Q49.4` remains the complementary physical channel and is feedback,
+not a separately writable GUI command.
 
 ### F‑DQ 2A (slot 4, %Q0) — direct 2 A push‑pull
 | Address | Tag | Real‑world |

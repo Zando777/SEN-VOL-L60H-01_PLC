@@ -26,8 +26,8 @@ LOG_OUTPUTS = (
     ("ign_15_54", 5, 1),
     ("ign_dr", 6, 2),
     ("starter_50", 7, 3),
-    ("park_unlock", 8, 5),
-    ("park_lock", 9, 4),
+    ("park_brake_control", 8, 5),
+    ("park_brake_complement", 9, 4),
     ("estop_solenoid_1", 10, None),
     ("estop_solenoid_2", 11, None),
 )
@@ -40,8 +40,7 @@ OUTPUTS = [
     (6, "Ignition 15/54", "Ign_15_54  %Q49.1", (5,)),
     (7, "Ignition DR", "Ign_DR  %Q49.2", (6,)),
     (8, "Starter 50", "Ign_50  %Q49.3", (7,)),
-    (9, "Park unlock", "ParkBrake_Unlock  %Q49.5", (8,)),
-    (10, "Park lock", "ParkBrake_Lock  %Q49.4 (complementary)", (9,)),
+    (9, "Park brake", "ON = brake enabled | physical channels %Q49.5 / %Q49.4", (8, 9)),
     (11, "E-stop solenoids", "Sol_Estop %Q0.0 + Sol_Estop_2 %Q0.1", (10, 11)),
 ]
 
@@ -77,7 +76,12 @@ SAFETY_DETAIL_FIELDS = (
 
 # GUI selector -> HR12 F-RQ readback bit. The readback bit order follows
 # %Q49.0..7, while the GUI order is organized by machine function.
-F_RQ_READBACK = {1: 7, 2: 6, 5: 0, 6: 1, 7: 2, 8: 3, 9: 5, 10: 4}
+F_RQ_READBACK = {1: 7, 2: 6, 5: 0, 6: 1, 7: 2, 8: 3}
+PARK_BRAKE_SELECTOR = 9
+PARK_BRAKE_CONTROL_Q_BIT = 8
+PARK_BRAKE_COMPLEMENT_Q_BIT = 9
+PARK_BRAKE_CONTROL_RQ_BIT = 5
+PARK_BRAKE_COMPLEMENT_RQ_BIT = 4
 
 # Ignition-only test equivalent of production states 6..10. Main power, MCU and
 # A/M-relay outputs retain their pre-start states. Starter 50 is limited to 10 s.
@@ -375,8 +379,9 @@ class TestPanel:
 
         ttk.Label(
             outer,
-            text=("Park Lock and Park Unlock are complementary in F-LAD; one of that pair is commanded "
-                  "whenever the safety program is active. Both E-stop solenoids operate together."),
+            text=("Park brake has one command: ON = brake enabled, OFF = brake disabled. "
+                  "The two complementary physical channels remain visible as Q/RQ feedback. "
+                  "Both E-stop solenoids operate together."),
             wraplength=760,
             foreground="#555555",
         ).grid(row=7, column=0, columnspan=5, sticky="w", pady=(10, 0))
@@ -471,11 +476,6 @@ class TestPanel:
         if self.selected_mask & mask:
             self.selected_mask &= ~mask
         else:
-            # Park Lock and Park Unlock are physically complementary.
-            if selector == 9:
-                self.selected_mask &= ~(1 << 9)
-            elif selector == 10:
-                self.selected_mask &= ~(1 << 8)
             self.selected_mask |= mask
         self._log_event(
             "WARNING",
@@ -751,7 +751,25 @@ class TestPanel:
             for selector, (indicator, channel_bits) in self.output_indicators.items():
                 values = [bool(output_bits & (1 << bit)) for bit in channel_bits]
                 requests = [bool(request_bits & (1 << bit)) for bit in channel_bits]
-                if len(values) == 1:
+                if selector == PARK_BRAKE_SELECTOR:
+                    brake_requested = bool(request_bits & (1 << PARK_BRAKE_CONTROL_Q_BIT))
+                    complement_requested = bool(request_bits & (1 << PARK_BRAKE_COMPLEMENT_Q_BIT))
+                    control_q = bool(output_bits & (1 << PARK_BRAKE_CONTROL_Q_BIT))
+                    complement_q = bool(output_bits & (1 << PARK_BRAKE_COMPLEMENT_Q_BIT))
+                    control_rq = bool(relay_readbacks & (1 << PARK_BRAKE_CONTROL_RQ_BIT))
+                    complement_rq = bool(relay_readbacks & (1 << PARK_BRAKE_COMPLEMENT_RQ_BIT))
+                    text = (
+                        f"REQ {'ON' if brake_requested else 'OFF'} | "
+                        f"Q49.5 {'HIGH' if control_q else 'LOW'} / RQ {'HIGH' if control_rq else 'LOW'} | "
+                        f"Q49.4 {'HIGH' if complement_q else 'LOW'} / RQ {'HIGH' if complement_rq else 'LOW'}"
+                    )
+                    color_ok = (
+                        control_q == brake_requested
+                        and complement_q == complement_requested
+                        and control_q == control_rq
+                        and complement_q == complement_rq
+                    )
+                elif len(values) == 1:
                     q_text = "HIGH" if values[0] else "LOW"
                     req_text = "HIGH" if requests[0] else "LOW"
                     if selector in F_RQ_READBACK:

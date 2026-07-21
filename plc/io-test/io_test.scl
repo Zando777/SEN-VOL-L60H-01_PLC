@@ -16,7 +16,8 @@ FUNCTION "FC_OutputTest" : Void
 { S7_Optimized_Access := 'TRUE' }
 VERSION : 1.0
 // Volvo L60H commissioning-only I/O test controller.
-// HR0 = manual output request bitmask (bits 0..12 may be combined)
+// HR0 = manual output request bitmask (bits 0..8 and 10 may be combined;
+// bit 8 is the single semantic Park Brake command and bit 9 is reserved/ignored)
 // HR1 = W#16#A55A to ARM; HR8 = GUI heartbeat. HR2 echoes the active manual mask.
 // HR3..HR7 = pressures x10 bar; HR9 = safety/test status; HR10 = output image.
 // HR11 = crank-sequence stage (0=manual, 14..17=production crank stages). During
@@ -38,6 +39,9 @@ VERSION : 1.0
    END_VAR
 BEGIN
    #requestMask := "ModbusData".hold[0];
+   // The former independent Park Lock command (HR0 bit 9) is retired. Clear it
+   // before any control or echo use so an older GUI cannot command it.
+   #requestMask.%X9 := FALSE;
    #crankStage := "ModbusData".hold[11];
 
    // Req_RunMon arms the existing heartbeat watchdog. No heartbeat means no requests.
@@ -97,7 +101,8 @@ BEGIN
             "Seq_DB".Req_IgnDR := TRUE;
             // Engine-running test mode: keep the run-position ignition requests
             // while allowing the remaining independent outputs to be tested.
-            "Seq_DB".Req_ParkUnlock := #requestMask.%X8 AND NOT #requestMask.%X9;
+            // Legacy PLC tag name: verified machine behavior is TRUE = park brake ON.
+            "Seq_DB".Req_ParkUnlock := #requestMask.%X8;
             "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
          END_CASE;
       ELSE
@@ -109,8 +114,9 @@ BEGIN
          "Seq_DB".Req_Ign1554 := #requestMask.%X5;
          "Seq_DB".Req_IgnDR := #requestMask.%X6;
          "Seq_DB".Req_Ign50 := #requestMask.%X7;
-         // Lock and Unlock are complementary in F-LAD; Lock wins if both bits arrive.
-         "Seq_DB".Req_ParkUnlock := #requestMask.%X8 AND NOT #requestMask.%X9;
+         // One semantic Park Brake command. F-LAD owns the complementary
+         // Q49.5/Q49.4 physical pair; Modbus has no separate lock command.
+         "Seq_DB".Req_ParkUnlock := #requestMask.%X8;
          "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
       END_IF;
    END_IF;
@@ -184,9 +190,10 @@ BEGIN
    #requestImage.%X6 := "Seq_DB".Req_IgnDR;
    #requestImage.%X7 := "Seq_DB".Req_Ign50;
    #requestImage.%X8 := "Seq_DB".Req_ParkUnlock;
+   // Complementary physical command diagnostic, derived rather than writable.
    #requestImage.%X9 := #active
                          AND ((#crankStage = W#16#0) OR (#crankStage = W#16#17))
-                         AND #requestMask.%X9;
+                         AND NOT "Seq_DB".Req_ParkUnlock;
    #requestImage.%X10 := "Seq_DB".Req_EbrakeRel;
    #requestImage.%X11 := "Seq_DB".Req_EbrakeRel;
    "ModbusData".hold[14] := #requestImage;
