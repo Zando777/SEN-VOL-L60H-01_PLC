@@ -60,8 +60,12 @@ BEGIN
    "Seq_DB".Req_Ign1554 := FALSE;
    "Seq_DB".Req_IgnDR := FALSE;
    "Seq_DB".Req_Ign50 := FALSE;
-   "Seq_DB".Req_ParkUnlock := FALSE;
-   "Seq_DB".Req_EbrakeRel := FALSE;
+   // Verified machine polarity despite the legacy tag name: TRUE = parking
+   // brake ON/enabled. This is the safe default in both A and M.
+   "Seq_DB".Req_ParkUnlock := TRUE;
+   // Verified polarity: Manual defaults both physical outputs ON/disengaged;
+   // Auto defaults them OFF/engaged until an armed test request changes them.
+   "Seq_DB".Req_EbrakeRel := NOT "AutoMan_Sw1";
    "Seq_DB".Req_Error := FALSE;
    "Seq_DB".Req_CrankFail := FALSE;
    "Seq_DB".Req_PostPress := TRUE;
@@ -103,7 +107,13 @@ BEGIN
             // while allowing the remaining independent outputs to be tested.
             // Legacy PLC tag name: verified machine behavior is TRUE = park brake ON.
             "Seq_DB".Req_ParkUnlock := #requestMask.%X8;
-            "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+            IF "AutoMan_Sw1" THEN
+               "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+            ELSE
+               // Verified polarity: output ON = brakes disengaged. Manual keeps
+               // both E-stop brake outputs energized/disengaged.
+               "Seq_DB".Req_EbrakeRel := TRUE;
+            END_IF;
          END_CASE;
       ELSE
          // Manual test mode: every bit is independent, so combinations are allowed.
@@ -117,7 +127,13 @@ BEGIN
          // One semantic Park Brake command. F-LAD owns the complementary
          // Q49.5/Q49.4 physical pair; Modbus has no separate lock command.
          "Seq_DB".Req_ParkUnlock := #requestMask.%X8;
-         "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+         IF "AutoMan_Sw1" THEN
+            "Seq_DB".Req_EbrakeRel := #requestMask.%X10;
+         ELSE
+            // Verified polarity: output ON = brakes disengaged. Manual keeps
+            // both E-stop brake outputs energized/disengaged.
+            "Seq_DB".Req_EbrakeRel := TRUE;
+         END_IF;
       END_IF;
    END_IF;
 
@@ -128,11 +144,19 @@ BEGIN
    END_IF;
 
    // Continuous pressure telemetry, identical units/order to the production interface.
-   "ModbusData".hold[3] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle1_bar * 10.0));
-   "ModbusData".hold[4] := INT_TO_WORD(REAL_TO_INT("PressData".Estop1_bar * 10.0));
-   "ModbusData".hold[5] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle2_bar * 10.0));
-   "ModbusData".hold[6] := INT_TO_WORD(REAL_TO_INT("PressData".Estop2_bar * 10.0));
-   "ModbusData".hold[7] := INT_TO_WORD(REAL_TO_INT("PressData".Prop_bar * 10.0));
+   // The sensor's stated characteristic deviation is +/-0.8% of its 400 bar span
+   // (= +/-3.2 bar). Normalize that zero region before converting to an unsigned
+   // Modbus Word so a small negative value can never wrap to about 6553 bar.
+   IF "PressData".Shuttle1_bar <= 3.2 THEN "ModbusData".hold[3] := W#16#0;
+   ELSE "ModbusData".hold[3] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle1_bar * 10.0)); END_IF;
+   IF "PressData".Estop1_bar <= 3.2 THEN "ModbusData".hold[4] := W#16#0;
+   ELSE "ModbusData".hold[4] := INT_TO_WORD(REAL_TO_INT("PressData".Estop1_bar * 10.0)); END_IF;
+   IF "PressData".Shuttle2_bar <= 3.2 THEN "ModbusData".hold[5] := W#16#0;
+   ELSE "ModbusData".hold[5] := INT_TO_WORD(REAL_TO_INT("PressData".Shuttle2_bar * 10.0)); END_IF;
+   IF "PressData".Estop2_bar <= 3.2 THEN "ModbusData".hold[6] := W#16#0;
+   ELSE "ModbusData".hold[6] := INT_TO_WORD(REAL_TO_INT("PressData".Estop2_bar * 10.0)); END_IF;
+   IF "PressData".Prop_bar <= 3.2 THEN "ModbusData".hold[7] := W#16#0;
+   ELSE "ModbusData".hold[7] := INT_TO_WORD(REAL_TO_INT("PressData".Prop_bar * 10.0)); END_IF;
 
    #status := W#16#0;
    #status.%X0 := #active;

@@ -7,7 +7,8 @@ VERSION : 0.1
 // relies on carry-forward behavior from a previous state.
 //
 // IMPORTANT: Req_EstopBrakeChXApply is a semantic request (TRUE = brake applied).
-// Its final F-LAD-to-hardware polarity must be verified before commissioning.
+// Verified physical output polarity is the inverse: output ON = disengaged and
+// output OFF/resting = engaged. ProductionIO performs this inversion explicitly.
 // The current machine shutdown ignition order is intentionally not guessed;
 // state 81 holds the engine safely with brakes applied until that definition exists.
 
@@ -184,8 +185,8 @@ BEGIN
    END_IF;
 
    // Explicit deterministic defaults. These are the complete desired requests
-   // for an unknown/INIT state: power and ignition off, both brakes applied,
-   // parking brake not unlocked, A/M disabled.
+   // for an unknown/INIT state: power and ignition off, parking brake ON and
+   // A/M disabled.
    #Req_MainPwr := FALSE;
    #Req_MCU := FALSE;
    #Req_AMRelays := FALSE;
@@ -193,12 +194,14 @@ BEGIN
    #Req_Ign1554 := FALSE;
    #Req_IgnDR := FALSE;
    #Req_Ign50 := FALSE;
-   // In Auto the deterministic fallback is both autonomous E-stop brake
-   // channels applied. In Manual both are explicitly disengaged as required.
-   // This does not bypass the separate remote safety E-stop input/function.
+   // In Auto the deterministic fallback is both autonomous E-stop brakes applied
+   // (physical outputs OFF). In Manual both are explicitly disengaged (physical
+   // outputs ON). The separate remote safety E-stop remains authoritative.
    #Req_EstopBrakeCh1Apply := #AutoMode;
    #Req_EstopBrakeCh2Apply := #AutoMode;
-   #Req_ParkUnlock := FALSE;
+   // Verified machine polarity despite the legacy field name:
+   // TRUE = parking brake ON/enabled; FALSE = brake OFF/disabled.
+   #Req_ParkUnlock := TRUE;
 
    #ReadyForDrive := FALSE;
    #DrivingEnabled := FALSE;
@@ -601,8 +604,9 @@ BEGIN
          #Req_IgnDR := TRUE;
          #Req_EstopBrakeCh1Apply := FALSE;
          #Req_EstopBrakeCh2Apply := FALSE;
-         #Req_ParkUnlock := TRUE;
-         IF #Rq_ParkUnlock AND NOT #Rq_ParkLock THEN
+         // Disable the parking brake only after A/M has been enabled.
+         #Req_ParkUnlock := FALSE;
+         IF NOT #Rq_ParkUnlock AND #Rq_ParkLock THEN
             #TransitionReason := W#16#3201;
             #State := #ST_OPERATIONAL;
          ELSIF #stateTimer.ET >= T#5S THEN
@@ -620,7 +624,7 @@ BEGIN
          #Req_IgnDR := TRUE;
          #Req_EstopBrakeCh1Apply := FALSE;
          #Req_EstopBrakeCh2Apply := FALSE;
-         #Req_ParkUnlock := TRUE;
+         #Req_ParkUnlock := FALSE;
          #ReadyForDrive := TRUE;
          #DrivingEnabled := TRUE;
          #EstopBrakeChannelsReleased := TRUE;
@@ -658,14 +662,14 @@ BEGIN
 
       #ST_COMM_LOST_STOP:
          // No vehicle-speed feedback exists. Apply E-stop brakes and revoke A/M,
-         // but keep park unlock requested rather than guessing when a moving
-         // machine is safe for parking-brake application.
+         // but keep the parking brake OFF rather than applying it to a potentially
+         // moving machine before stopped confirmation is available.
          #Req_MainPwr := TRUE;
          #Req_MCU := TRUE;
          #Req_IgnR := TRUE;
          #Req_Ign1554 := TRUE;
          #Req_IgnDR := TRUE;
-         #Req_ParkUnlock := TRUE;
+         #Req_ParkUnlock := FALSE;
          #VehicleStopConfirmationRequired := TRUE;
 
       #ST_SHUTDOWN_BRAKES:
@@ -676,9 +680,9 @@ BEGIN
             #Req_Ign1554 := TRUE;
             #Req_IgnDR := TRUE;
          END_IF;
-         // Defaults apply both E-stop brake channels and lock the park brake.
+         // Defaults apply both E-stop brake channels and turn the park brake ON.
          IF #Rq_EstopBrakeCh1Applied AND #Rq_EstopBrakeCh2Applied
-            AND #Rq_ParkLock AND NOT #Rq_ParkUnlock THEN
+            AND #Rq_ParkUnlock AND NOT #Rq_ParkLock THEN
             #TransitionReason := W#16#8003;
             #State := #ST_SHUTDOWN_IGN_TBD;
          ELSIF #stateTimer.ET >= T#5S THEN

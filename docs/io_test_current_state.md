@@ -63,8 +63,21 @@ calculated from the signed raw input as `4 + raw × 16 / 27648`; values are not
 clamped so sensor underrange and overrange remain visible. The same calculated
 mA values are recorded in the telemetry CSV.
 
+The GUI presentation order is Shuttle 1, Shuttle 2, E-stop 1, E-stop 2, Prop.
+The Modbus register order remains unchanged for compatibility: Shuttle 1,
+E-stop 1, Shuttle 2, E-stop 2, Prop.
+
+The pressure sensors specify a maximum characteristic deviation of ±0.8% of
+span. For the 0–400 bar range this is ±3.2 bar (equivalent to ±0.128 mA on the
+4–20 mA span). Values at or below 3.2 bar are therefore normalized to 0 bar in
+the pressure telemetry, while the signed raw count and calculated mA remain
+unclamped for diagnostics. The 120–150 bar safety band is not widened.
+
 Whenever the output test is newly armed, the Park Brake toggle defaults to ON
-(brake enabled). It can still be switched OFF explicitly after arming.
+(brake enabled). The PLC request also defaults to parking brake ON in both Auto
+and Manual; it can still be switched OFF explicitly after arming. In Manual,
+both E-stop brake outputs are held ON/energized, which is the verified
+disengaged state. Their OFF/resting state engages the E-stop brakes.
 
 If an F-AI channel displays zero unexpectedly:
 

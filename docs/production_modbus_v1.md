@@ -92,16 +92,33 @@ A static writable bit alone is not accepted as proof of communication.
 | 4 | Ignition 15/54 |
 | 5 | Ignition DR |
 | 6 | Starter 50 |
-| 7 | E-stop brake channel 1 applied |
-| 8 | E-stop brake channel 2 applied |
-| 9 | Parking-brake unlock |
-| 10 | Parking-brake lock feedback (Q/F-RQ diagnostics only) |
+| 7 | E-stop channel 1 output ON / brake disengaged |
+| 8 | E-stop channel 2 output ON / brake disengaged |
+| 9 | Parking-brake ON/enabled (legacy PLC name: unlock) |
+| 10 | Complementary parking-brake OFF channel (Q/F-RQ diagnostics only) |
 
 The same bit order is used for request, Q, F-RQ and mismatch words. A/M and the
 two E-stop solenoids do not have F-RQ modules; their F-RQ bits remain zero.
 Parking lock is complementary to unlock and therefore has no independent
 sequencer request bit. A readback bit is valid only after its physical source
 and polarity have been verified.
+
+### HR53 semantic brake flags
+
+| Bit | Meaning |
+|---:|---|
+| 0 | Semantic E-stop brake channel 1 applied request |
+| 1 | Semantic E-stop brake channel 2 applied request |
+| 2 | E-stop brake channel 1 applied feedback (inverted from physical output) |
+| 3 | E-stop brake channel 2 applied feedback (inverted from physical output) |
+| 4 | Parking-brake ON request (legacy PLC name: unlock) |
+| 5 | Parking-brake ON readback |
+| 6 | Complementary parking-brake OFF readback |
+| 7 | E-stop brake test passed |
+
+For E-stop channels, physical output ON means disengaged and OFF/resting means
+engaged. HR48–HR51 expose physical output polarity; HR53 exposes the semantic
+applied state used by the sequencer.
 
 ### HR43 pressure-band flags
 

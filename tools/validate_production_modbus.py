@@ -60,6 +60,8 @@ required_io = (
     'byteOffset := 57',
     '"ProductionSeq_DB".Rq_ParkUnlock := #relayReadback.%X9;',
     '"ProductionSeq_DB".Rq_ParkLock := #relayReadback.%X10;',
+    '#requestImage.%X7 := NOT "ProductionSeq_DB".Req_EstopBrakeCh1Apply;',
+    '"ProductionSeq_DB".Rq_EstopBrakeCh1Applied := NOT #outputImage.%X7;',
 )
 for fragment in required_io:
     if fragment not in io_text:

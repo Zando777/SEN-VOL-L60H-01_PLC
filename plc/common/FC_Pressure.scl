@@ -1,0 +1,42 @@
+FUNCTION "FC_Pressure" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.4
+// Scales five 4-20 mA, 0-400 bar pressure inputs and computes build gates.
+// Sensor characteristic deviation is +/-0.8% of span (= +/-3.2 bar), so the
+// complete zero uncertainty region is normalized to 0 bar. Raw-count fault
+// checks remain independent so this normalization cannot hide a wire break.
+   VAR_TEMP
+      shOK : Bool;
+      buildOK : Bool;
+   END_VAR
+BEGIN
+   "PressData".Shuttle1_bar := INT_TO_REAL("Press_Shuttle_1") * 400.0 / 27648.0;
+   "PressData".Estop1_bar   := INT_TO_REAL("Press_Estop_1")   * 400.0 / 27648.0;
+   "PressData".Shuttle2_bar := INT_TO_REAL("Press_Shuttle_2") * 400.0 / 27648.0;
+   "PressData".Estop2_bar   := INT_TO_REAL("Press_Estop_2")   * 400.0 / 27648.0;
+   "PressData".Prop_bar     := INT_TO_REAL("Press_Prop")      * 400.0 / 27648.0;
+
+   IF "PressData".Shuttle1_bar <= 3.2 THEN "PressData".Shuttle1_bar := 0.0; END_IF;
+   IF "PressData".Estop1_bar   <= 3.2 THEN "PressData".Estop1_bar   := 0.0; END_IF;
+   IF "PressData".Shuttle2_bar <= 3.2 THEN "PressData".Shuttle2_bar := 0.0; END_IF;
+   IF "PressData".Estop2_bar   <= 3.2 THEN "PressData".Estop2_bar   := 0.0; END_IF;
+   IF "PressData".Prop_bar     <= 3.2 THEN "PressData".Prop_bar     := 0.0; END_IF;
+
+   "PressData".Shuttle1_fault := ("Press_Shuttle_1" < -1000);
+   "PressData".Estop1_fault   := ("Press_Estop_1"   < -1000);
+   "PressData".Shuttle2_fault := ("Press_Shuttle_2" < -1000);
+   "PressData".Estop2_fault   := ("Press_Estop_2"   < -1000);
+   "PressData".Prop_fault     := ("Press_Prop"      < -1000);
+
+   #shOK :=     NOT "PressData".Shuttle1_fault AND ("PressData".Shuttle1_bar >= 40.0)
+            AND NOT "PressData".Shuttle2_fault AND ("PressData".Shuttle2_bar >= 40.0);
+
+   #buildOK := #shOK
+            AND NOT "PressData".Estop1_fault AND ("PressData".Estop1_bar >= 120.0)
+            AND NOT "PressData".Estop2_fault AND ("PressData".Estop2_bar >= 120.0)
+            AND NOT "PressData".Prop_fault   AND ("PressData".Prop_bar   >= 120.0);
+
+   "PressData".PressBuildOK := #buildOK;
+   "Seq_DB".PressBuildOK    := #buildOK;
+   "Seq_DB".ShuttleBuildOK  := #shOK;
+END_FUNCTION

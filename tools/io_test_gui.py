@@ -20,6 +20,9 @@ POLL_INTERVAL_MS = 250
 ANALOG_RAW_FULL_SCALE = 27648.0
 ANALOG_MIN_MA = 4.0
 ANALOG_SPAN_MA = 16.0
+PRESSURE_SPAN_BAR = 400.0
+SENSOR_CHARACTERISTIC_DEVIATION_PERCENT = 0.8
+PRESSURE_ZERO_DEADBAND_BAR = PRESSURE_SPAN_BAR * SENSOR_CHARACTERISTIC_DEVIATION_PERCENT / 100.0
 
 LOG_OUTPUTS = (
     ("main_power", 0, 7),
@@ -47,7 +50,10 @@ OUTPUTS = [
     (11, "E-stop solenoids", "Sol_Estop %Q0.0 + Sol_Estop_2 %Q0.1", (10, 11)),
 ]
 
-PRESSURES = ("Shuttle 1", "E-stop 1", "Shuttle 2", "E-stop 2", "Prop")
+PRESSURES = ("Shuttle 1", "Shuttle 2", "E-stop 1", "E-stop 2", "Prop")
+# Modbus remains production-compatible: Shuttle1, Estop1, Shuttle2, Estop2, Prop.
+# Reorder only the GUI presentation.
+PRESSURE_DISPLAY_ORDER = (0, 2, 1, 3, 4)
 
 STATUS_FIELDS = (
     ("ACTIVE", 0, True),
@@ -82,6 +88,8 @@ SAFETY_DETAIL_FIELDS = (
 F_RQ_READBACK = {1: 7, 2: 6, 5: 0, 6: 1, 7: 2, 8: 3}
 PARK_BRAKE_SELECTOR = 9
 PARK_BRAKE_DEFAULT_MASK = 1 << (PARK_BRAKE_SELECTOR - 1)
+ESTOP_SELECTOR = 11
+ESTOP_SELECTOR_MASK = 1 << (ESTOP_SELECTOR - 1)
 PARK_BRAKE_CONTROL_Q_BIT = 8
 PARK_BRAKE_COMPLEMENT_Q_BIT = 9
 PARK_BRAKE_CONTROL_RQ_BIT = 5
@@ -108,6 +116,13 @@ def _timestamp_fields():
 def raw_to_ma(raw: int) -> float:
     """Convert Siemens normalized 4–20 mA raw counts to calculated loop mA."""
     return ANALOG_MIN_MA + (raw * ANALOG_SPAN_MA / ANALOG_RAW_FULL_SCALE)
+
+
+def pressure_word_to_bar(word: int) -> float:
+    """Decode x10-bar telemetry and normalize the sensor's zero uncertainty."""
+    signed = word - 0x10000 if word & 0x8000 else word
+    pressure = signed / 10.0
+    return 0.0 if pressure <= PRESSURE_ZERO_DEADBAND_BAR else pressure
 
 
 class SessionCsvLogger:
@@ -363,9 +378,10 @@ class TestPanel:
 
         pressure_frame = ttk.LabelFrame(lower_frame, text="Pressure telemetry", padding=8)
         pressure_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        pressure_frame.columnconfigure(1, weight=1)
         for row, (name, var) in enumerate(zip(PRESSURES, self.pressure_vars)):
             ttk.Label(pressure_frame, text=name, width=14).grid(row=row, column=0, sticky="w")
-            ttk.Label(pressure_frame, textvariable=var, width=24).grid(row=row, column=1, sticky="e")
+            ttk.Label(pressure_frame, textvariable=var, width=32).grid(row=row, column=1, sticky="e")
 
         status_frame = ttk.LabelFrame(lower_frame, text="PLC safety/status", padding=8)
         status_frame.grid(row=0, column=1, sticky="nsew", padx=5)
@@ -672,7 +688,8 @@ class TestPanel:
             pressure_names = ("shuttle1_bar", "estop1_bar", "shuttle2_bar", "estop2_bar", "prop_bar")
             current_names = ("shuttle1_ma", "estop1_ma", "shuttle2_ma", "estop2_ma", "prop_ma")
             raw_names = ("shuttle1_raw", "estop1_raw", "shuttle2_raw", "estop2_raw", "prop_raw")
-            row.update({name: f"{value / 10.0:.1f}" for name, value in zip(pressure_names, regs[3:8])})
+            pressure_values = [pressure_word_to_bar(value) for value in regs[3:8]]
+            row.update({name: f"{value:.1f}" for name, value in zip(pressure_names, pressure_values)})
             row.update({name: f"{raw_to_ma(raw):.3f}" for name, raw in zip(current_names, raw_inputs)})
             row.update(dict(zip(raw_names, raw_inputs)))
             status_values = {
@@ -727,9 +744,23 @@ class TestPanel:
             self.connection_text.set(f"Connected: {PLC_IP}:502")
             self.active_text.set(f"PLC active manual mask: 0x{regs[2]:04X}")
             raw_inputs = [value - 0x10000 if value & 0x8000 else value for value in regs[17:22]]
-            for var, pressure, raw in zip(self.pressure_vars, regs[3:8], raw_inputs):
-                var.set(f"{pressure / 10.0:.1f} bar | {raw_to_ma(raw):.3f} mA | raw {raw}")
+            pressure_values = [pressure_word_to_bar(value) for value in regs[3:8]]
+            for var, index in zip(self.pressure_vars, PRESSURE_DISPLAY_ORDER):
+                var.set(
+                    f"{pressure_values[index]:.1f} bar | "
+                    f"{raw_to_ma(raw_inputs[index]):.3f} mA | raw {raw_inputs[index]}"
+                )
             bits = regs[9]
+            auto_mode = bool(bits & (1 << 4))
+            if not auto_mode and not (self.selected_mask & ESTOP_SELECTOR_MASK):
+                self.selected_mask |= ESTOP_SELECTOR_MASK
+                self._log_event(
+                    "INFO",
+                    "MANUAL_MODE_ESTOP_DEFAULT",
+                    "Manual mode forced both E-stop outputs ON/brakes disengaged",
+                )
+                self.write_controls(source="manual_mode_estop_default")
+                self.refresh_buttons()
             for name, bit, healthy_when in STATUS_FIELDS:
                 value = bool(bits & (1 << bit))
                 self._set_status(name, value, healthy_when)

@@ -127,8 +127,9 @@ BEGIN
    #requestImage.%X4 := "ProductionSeq_DB".Req_Ign1554;
    #requestImage.%X5 := "ProductionSeq_DB".Req_IgnDR;
    #requestImage.%X6 := "ProductionSeq_DB".Req_Ign50;
-   #requestImage.%X7 := "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
-   #requestImage.%X8 := "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
+   // Physical request image: output ON means E-stop brake disengaged.
+   #requestImage.%X7 := NOT "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
+   #requestImage.%X8 := NOT "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
    #requestImage.%X9 := "ProductionSeq_DB".Req_ParkUnlock;
 
    #sequenceFlags := W#16#0;

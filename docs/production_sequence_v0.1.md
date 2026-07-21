@@ -33,6 +33,14 @@ compiled as an F-project, downloaded, or approved for machine operation.
 - Manual mode explicitly disengages both PLC-controlled E-stop brake channels
   and cancels the autonomous sequence. The separate remote safety E-stop is not
   bypassed.
+- The parking brake defaults ON in both Auto and Manual. The existing PLC field
+  is still named `Req_ParkUnlock`, but verified machine polarity is TRUE = brake
+  ON/enabled and FALSE = brake OFF/disabled. Production disables it only after
+  the brake test passes, driving is confirmed and A/M relays are enabled.
+- E-stop output polarity is verified: output ON/energized = brake disengaged;
+  output OFF/resting = brake engaged. In Auto both channels are commanded
+  applied (outputs OFF) for safety abort/E-stop, fault hold, communication-loss
+  stop and shutdown. Manual holds both outputs ON/disengaged.
 - Brake-test failure keeps the engine running, applies both brake channels,
   keeps parking locked and waits for reset or a stop/shutdown command.
 - Engine Stop and complete System Shutdown are separate commands.
@@ -42,12 +50,13 @@ compiled as an F-project, downloaded, or approved for machine operation.
 
 ## Deliberately incomplete / blocked
 
-### Hardware polarity
+### E-stop hardware polarity
 
 `Req_EstopBrakeCh1Apply` and `Req_EstopBrakeCh2Apply` are semantic requests:
-TRUE means the sequencer requires the brake applied. The final relationship to
-the physical F-output must be established and validated in F-LAD. No safety
-mapping has been generated from an assumption.
+TRUE means the sequencer requires the brake applied. The physical output has
+the inverse polarity: ON = disengaged and OFF/resting = engaged. `ProductionIO`
+therefore inverts the semantic request at the hardware boundary and inverts the
+output image again for the semantic applied feedback.
 
 ### Ignition shutdown
 

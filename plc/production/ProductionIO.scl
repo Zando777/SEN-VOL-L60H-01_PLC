@@ -47,8 +47,8 @@ BEGIN
    #relayReadback.%X4 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 6, bitOffset := 0);  // Ignition 15/54
    #relayReadback.%X5 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 55, bitOffset := 0); // Ignition DR
    #relayReadback.%X6 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 56, bitOffset := 0); // Starter 50
-   #relayReadback.%X9 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 58, bitOffset := 0); // Park unlock
-   #relayReadback.%X10 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 57, bitOffset := 0); // Park lock
+   #relayReadback.%X9 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 58, bitOffset := 0); // Park brake ON (legacy: unlock)
+   #relayReadback.%X10 := PEEK_BOOL(area := B#16#81, dbNumber := 0, byteOffset := 57, bitOffset := 0); // Park brake OFF complement
    "ProductionIOData".RelayReadback := #relayReadback;
 
    #requestImage := W#16#0;
@@ -59,8 +59,10 @@ BEGIN
    #requestImage.%X4 := "ProductionSeq_DB".Req_Ign1554;
    #requestImage.%X5 := "ProductionSeq_DB".Req_IgnDR;
    #requestImage.%X6 := "ProductionSeq_DB".Req_Ign50;
-   #requestImage.%X7 := "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
-   #requestImage.%X8 := "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
+   // Verified polarity: physical output ON = brake disengaged. Sequencer fields
+   // are semantic Apply requests, so invert them at the hardware boundary.
+   #requestImage.%X7 := NOT "ProductionSeq_DB".Req_EstopBrakeCh1Apply;
+   #requestImage.%X8 := NOT "ProductionSeq_DB".Req_EstopBrakeCh2Apply;
    #requestImage.%X9 := "ProductionSeq_DB".Req_ParkUnlock;
 
    // Request/Q mismatches for every driven signal. For heavy relays, also
@@ -73,7 +75,8 @@ BEGIN
    #outputMismatch.%X5 := #outputMismatch.%X5 OR (#outputImage.%X5 <> #relayReadback.%X5);
    #outputMismatch.%X6 := #outputMismatch.%X6 OR (#outputImage.%X6 <> #relayReadback.%X6);
    #outputMismatch.%X9 := #outputMismatch.%X9 OR (#outputImage.%X9 <> #relayReadback.%X9);
-   // Park-lock is complementary to unlock and has no separate sequencer request.
+   // Bit 10 is complementary to the semantic Park Brake ON request and has no
+   // separate sequencer request.
    #outputMismatch.%X10 := (#outputImage.%X10 <> #relayReadback.%X10);
    "ProductionIOData".OutputMismatch := #outputMismatch;
 
@@ -101,8 +104,8 @@ BEGIN
    "ProductionSeq_DB".Estop2_bar := "PressData".Estop2_bar;
    "ProductionSeq_DB".Prop_bar := "PressData".Prop_bar;
    "ProductionSeq_DB".PressureSensorFault := "ProductionIOData".PressureFaultBits <> W#16#0;
-   "ProductionSeq_DB".Rq_EstopBrakeCh1Applied := #outputImage.%X7;
-   "ProductionSeq_DB".Rq_EstopBrakeCh2Applied := #outputImage.%X8;
+   "ProductionSeq_DB".Rq_EstopBrakeCh1Applied := NOT #outputImage.%X7;
+   "ProductionSeq_DB".Rq_EstopBrakeCh2Applied := NOT #outputImage.%X8;
    "ProductionSeq_DB".Rq_ParkUnlock := #relayReadback.%X9;
    "ProductionSeq_DB".Rq_ParkLock := #relayReadback.%X10;
 END_FUNCTION
