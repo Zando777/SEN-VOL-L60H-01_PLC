@@ -58,6 +58,14 @@ All inputs use the configured 4–20 mA range. The PLC scaling is
 `raw × 400 / 27648`, producing bar. At 4 mA the Siemens raw value is
 approximately zero.
 
+The GUI displays each channel as `bar | calculated mA | raw`. Current is
+calculated from the signed raw input as `4 + raw × 16 / 27648`; values are not
+clamped so sensor underrange and overrange remain visible. The same calculated
+mA values are recorded in the telemetry CSV.
+
+Whenever the output test is newly armed, the Park Brake toggle defaults to ON
+(brake enabled). It can still be switched OFF explicitly after arming.
+
 If an F-AI channel displays zero unexpectedly:
 
 1. Monitor its raw tag, the corresponding `PressData` value and

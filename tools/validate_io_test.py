@@ -24,8 +24,14 @@ if '#requestMask.%X8 AND NOT #requestMask.%X9' in SCL:
 required_gui = (
     '(9, "Park brake", "ON = brake enabled',
     "PARK_BRAKE_SELECTOR = 9",
+    "PARK_BRAKE_DEFAULT_MASK = 1 << (PARK_BRAKE_SELECTOR - 1)",
+    "self.selected_mask |= PARK_BRAKE_DEFAULT_MASK",
     "Q49.5",
     "Q49.4",
+    "def raw_to_ma(raw: int) -> float:",
+    "ANALOG_MIN_MA + (raw * ANALOG_SPAN_MA / ANALOG_RAW_FULL_SCALE)",
+    'f"{pressure / 10.0:.1f} bar | {raw_to_ma(raw):.3f} mA | raw {raw}"',
+    '"shuttle1_ma", "estop1_ma", "shuttle2_ma", "estop2_ma", "prop_ma"',
 )
 for fragment in required_gui:
     if fragment not in GUI:

@@ -17,6 +17,9 @@ from pymodbus.client import ModbusTcpClient
 
 PLC_IP = sys.argv[1] if len(sys.argv) > 1 else "10.90.11.200"
 POLL_INTERVAL_MS = 250
+ANALOG_RAW_FULL_SCALE = 27648.0
+ANALOG_MIN_MA = 4.0
+ANALOG_SPAN_MA = 16.0
 
 LOG_OUTPUTS = (
     ("main_power", 0, 7),
@@ -78,6 +81,7 @@ SAFETY_DETAIL_FIELDS = (
 # %Q49.0..7, while the GUI order is organized by machine function.
 F_RQ_READBACK = {1: 7, 2: 6, 5: 0, 6: 1, 7: 2, 8: 3}
 PARK_BRAKE_SELECTOR = 9
+PARK_BRAKE_DEFAULT_MASK = 1 << (PARK_BRAKE_SELECTOR - 1)
 PARK_BRAKE_CONTROL_Q_BIT = 8
 PARK_BRAKE_COMPLEMENT_Q_BIT = 9
 PARK_BRAKE_CONTROL_RQ_BIT = 5
@@ -101,6 +105,11 @@ def _timestamp_fields():
     }
 
 
+def raw_to_ma(raw: int) -> float:
+    """Convert Siemens normalized 4–20 mA raw counts to calculated loop mA."""
+    return ANALOG_MIN_MA + (raw * ANALOG_SPAN_MA / ANALOG_RAW_FULL_SCALE)
+
+
 class SessionCsvLogger:
     """Non-blocking CSV telemetry, command and event writer."""
 
@@ -110,6 +119,7 @@ class SessionCsvLogger:
         "gui_heartbeat", "armed", "outputs_in_m_requested", "selected_mask",
         "crank_sequence_running", "crank_stage", "plc_active_mask",
         "shuttle1_bar", "estop1_bar", "shuttle2_bar", "estop2_bar", "prop_bar",
+        "shuttle1_ma", "estop1_ma", "shuttle2_ma", "estop2_ma", "prop_ma",
         "shuttle1_raw", "estop1_raw", "shuttle2_raw", "estop2_raw", "prop_raw",
         "test_active", "heartbeat_seen", "comm_lost", "safe_ok", "auto_mode",
         "remote_estop_ch1", "remote_estop_ch2", "remote_ack", "remote_start",
@@ -227,7 +237,9 @@ class TestPanel:
         self.root.title(f"Volvo L60H I/O Test — {PLC_IP}")
         self.client = ModbusTcpClient(PLC_IP, port=502, timeout=0.8)
         self.heartbeat = 0
-        self.selected_mask = 0
+        # Begin every newly armed test with the parking brake requested ON.
+        # The request is ignored by the PLC while the panel is disarmed.
+        self.selected_mask = PARK_BRAKE_DEFAULT_MASK
         self.crank_stage = 0
         self.connected = False
         self.crank_sequence_running = False
@@ -399,6 +411,7 @@ class TestPanel:
                 self.armed.set(False)
                 self._log_event("INFO", "ARM_CANCELLED", "Operator cancelled arming")
                 return
+            self.selected_mask |= PARK_BRAKE_DEFAULT_MASK
         else:
             self.cancel_crank_sequence(write=False)
             self.selected_mask = 0
@@ -657,8 +670,10 @@ class TestPanel:
         }
         if regs:
             pressure_names = ("shuttle1_bar", "estop1_bar", "shuttle2_bar", "estop2_bar", "prop_bar")
+            current_names = ("shuttle1_ma", "estop1_ma", "shuttle2_ma", "estop2_ma", "prop_ma")
             raw_names = ("shuttle1_raw", "estop1_raw", "shuttle2_raw", "estop2_raw", "prop_raw")
             row.update({name: f"{value / 10.0:.1f}" for name, value in zip(pressure_names, regs[3:8])})
+            row.update({name: f"{raw_to_ma(raw):.3f}" for name, raw in zip(current_names, raw_inputs)})
             row.update(dict(zip(raw_names, raw_inputs)))
             status_values = {
                 "test_active": 0, "heartbeat_seen": 1, "comm_lost": 2, "safe_ok": 3,
@@ -713,7 +728,7 @@ class TestPanel:
             self.active_text.set(f"PLC active manual mask: 0x{regs[2]:04X}")
             raw_inputs = [value - 0x10000 if value & 0x8000 else value for value in regs[17:22]]
             for var, pressure, raw in zip(self.pressure_vars, regs[3:8], raw_inputs):
-                var.set(f"{pressure / 10.0:.1f} bar | raw {raw}")
+                var.set(f"{pressure / 10.0:.1f} bar | {raw_to_ma(raw):.3f} mA | raw {raw}")
             bits = regs[9]
             for name, bit, healthy_when in STATUS_FIELDS:
                 value = bool(bits & (1 << bit))
