@@ -22,6 +22,8 @@ automation project.
 - `docs/io_test_current_state.md` — current implementation and deployment status
 - `docs/compute_box_ros_handover.md` — compute-box Modbus/ROS handover
 - `docs/production_modbus_v1.md` — versioned production command/telemetry map
+- `docs/plc_logging_feedback_safety_tasklist.md` — gated implementation and
+  verification checklist for PLC history, physical feedback and safety
 - `docs/project_inventory.md` — canonical TIA projects and archived lineages
 - `docs/volvo_l60h_design.md` — system design notes
 - `docs/test_plan.md` — commissioning test plan
@@ -36,15 +38,17 @@ The commissioning project continuously publishes all five pressure channels and
 detailed safety state over Modbus. Multiple outputs may be requested together,
 but every physical output remains gated by the fail-safe program.
 
-The crank sequence controls ignition stages 14–17. Main Power, MCU Enable and
-A/M Relays retain their pre-start states. In engine-running stage 17, non-ignition
-outputs can be tested without cancelling the run-position ignition requests.
+The crank sequence controls only ignition stages 14–17. Main Power, MCU Enable,
+A/M Relays and the mode-valid E-stop request retain their pre-start states.
+Park Brake is forced ON through crank and state 17. In engine-running state 17,
+non-ignition outputs can be tested without cancelling the run-position ignition
+requests.
 
-The GUI automatically records each session under
-`Documents/VolvoL60H/logs/YYYY-MM-DD/` as three CSV files: continuous telemetry,
-every outgoing Modbus write, and state/fault/operator events. CSV writes run on
-a background thread and do not block Modbus polling. `ENABLE CSV LOGGING` can
-flush/close the current session and start a fresh Run ID when enabled again.
+CSV logging defaults OFF. When `ENABLE CSV LOGGING` is selected, the GUI records
+under `Documents/VolvoL60H/logs/YYYY-MM-DD/` as three CSV files: continuous
+telemetry, every outgoing Modbus write, and state/fault/operator events. CSV
+writes run on a background thread and do not block Modbus polling. Disabling
+logging flushes/closes the session; enabling it again starts a fresh Run ID.
 
 See [`docs/io_test_current_state.md`](docs/io_test_current_state.md) for the
 complete register map, safety behavior and current deployment status.
