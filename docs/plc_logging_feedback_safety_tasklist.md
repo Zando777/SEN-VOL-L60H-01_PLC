@@ -11,6 +11,9 @@ Scope:
 This work is divided into gates. Logging is observational and must never be
 placed in the F-safety decision path or inhibit deterministic control.
 
+The P0 engine-stop and Auto/Manual handover work is tracked in
+[`l60_priority_todos.md`](l60_priority_todos.md).
+
 ## Gate 0 — Freeze definitions before implementation
 
 - [ ] Create one authoritative signal/polarity matrix covering every input,
