@@ -19,7 +19,7 @@ physical-output equations.
 ## Common behavior
 
 - Fixed ring capacity: 128 event records.
-- Execution is bounded. Production has twelve fixed edge checks per scan.
+- Execution is bounded. Production has thirteen fixed edge checks per scan.
   I/O test has eleven checks per `FC_OutputTest` invocation and the existing
   test `Main` invokes that FC twice per scan.
 - A full ring overwrites the oldest record and increments `OverwriteCount`.
@@ -52,6 +52,7 @@ physical-output equations.
 | `0631` | Output mismatch cleared | diagnostics |
 | `0700` | Pressure fault bits changed | pressure diagnostics |
 | `0710` | Pressure-band bits changed | pressure diagnostics |
+| `0800` | Auto/Manual input diagnostic word changed | safety/I/O boundary |
 
 Sources: logger `1`, sequencer `2`, safety/I/O `3`, communication `4`, Modbus
 commands `5`, output diagnostics `6`, pressure diagnostics `7`.
@@ -83,12 +84,14 @@ PLC-owned response:
 | 67 | Response status: `1` found, `2` not found |
 | 68–111 | Coherent event record |
 | 112–115 | Logger diagnostic counters and last event ID |
+| 116 | Live Auto/Manual input diagnostic word |
+| 117 | Selected event record Auto/Manual input diagnostic word |
 
 The record window contains sequence, event ID/severity/source, old/new values,
 UTC system time components, sequencer state/fault/reason, command and command
 sequence, request/Q/F-RQ/mismatch images, safety/brake flags, pressure
 fault/band flags, five pressures, five signed raw inputs, heartbeat age,
-watchdog timeout and boot/session number.
+watchdog timeout, boot/session number and the Auto/Manual input diagnostic word.
 
 ## I/O-test event identifiers
 

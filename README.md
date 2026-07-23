@@ -26,6 +26,8 @@ automation project.
   verification checklist for PLC history, physical feedback and safety
 - `docs/plc_event_logging_v1.md` — PLC event schema, IDs and Modbus retrieval
 - `docs/l60_priority_todos.md` — P0 engine-stop and Manual-handover work
+- `docs/manual_mode_authority_audit.md` — exported F-LAD findings and the
+  required Manual/Auto authority boundary
 - `docs/project_inventory.md` — canonical TIA projects and archived lineages
 - `docs/volvo_l60h_design.md` — system design notes
 - `docs/test_plan.md` — commissioning test plan

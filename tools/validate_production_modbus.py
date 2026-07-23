@@ -44,6 +44,7 @@ required_source = (
     '"ProductionModbusData".hold[53] := #brakeFlags;',
     '"ProductionModbusData".hold[54]',
     '"ProductionModbusData".hold[55]',
+    '"ProductionModbusData".hold[116] := "ProductionIOData".ModeInputBits;',
 )
 for fragment in required_source:
     if fragment not in text:
@@ -57,6 +58,7 @@ required_logging = (
     '"ProductionModbusData".hold[67] := "ProductionLogReadData".ResponseStatus;',
     '"ProductionModbusData".hold[68]',
     '"ProductionModbusData".hold[115] := "ProductionLogData".LastEventId;',
+    '"ProductionModbusData".hold[117]',
 )
 for fragment in required_logging:
     if fragment not in log_text:
@@ -65,6 +67,9 @@ for fragment in required_logging:
 required_io = (
     'FUNCTION "FC_ProductionIOPack" : Void',
     '"ProductionIOData".EstopSafe := "Main_Safety_RTG1_DB".estop_safe;',
+    '#modeInputBits.%X0 := "AutoMan_Sw1";',
+    '#modeInputBits.%X1 := "AutoMan_Sw2";',
+    'byteOffset := 22,',
     '"ProductionSeq_DB".AutoMode := "AutoMan_Sw1";',
     '"ProductionSeq_DB".Abort := (NOT "ProductionIOData".EstopSafe) OR "PressData".PressTrip;',
     '#outputImage.%X7 := "Sol_Estop";',
@@ -117,9 +122,10 @@ required_docs = (
     "Packed F-RQ relay readback image",
     "E-stop brake channel 1 applied",
     "A/M Relays",
+    "Auto/Manual input diagnostics",
 )
 for fragment in required_docs:
     if fragment not in doc:
         raise SystemExit(f"Modbus documentation invariant missing: {fragment}")
 
-print("production Modbus static validation OK: schema 1.0 control plus log HR4..HR6/HR56..HR115")
+print("production Modbus static validation OK: schema 1.0 control plus mode diagnostics")

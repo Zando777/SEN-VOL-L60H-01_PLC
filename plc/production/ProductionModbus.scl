@@ -29,6 +29,7 @@ VERSION : 0.1
       Park_Disable : Bool;
       EstopBrake_Disable : Bool;
 
+      ModeInputBits : Word;        // raw/effective mode diagnostics; never used for control
       OutputImage : Word;          // packed physical Q image, same bits as request image
       RelayReadback : Word;        // packed verified F-RQ feedback, same bits as request image
       OutputMismatch : Word;       // request/Q/RQ mismatch diagnostics
@@ -202,4 +203,5 @@ BEGIN
    "ProductionModbusData".hold[53] := #brakeFlags;
    "ProductionModbusData".hold[54] := DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".HeartbeatAge) / 100);
    "ProductionModbusData".hold[55] := DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".ActiveTimeout) / 100);
+   "ProductionModbusData".hold[116] := "ProductionIOData".ModeInputBits;
 END_FUNCTION

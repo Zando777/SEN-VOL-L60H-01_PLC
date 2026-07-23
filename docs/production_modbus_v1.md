@@ -64,7 +64,9 @@ A static writable bit alone is not accepted as proof of communication.
 | 56–67 | Event logger metadata and coherent-response status |
 | 68–111 | Requested event record |
 | 112–115 | Event logger diagnostic counters |
-| 116–127 | Reserved |
+| 116 | Live Auto/Manual input diagnostics |
+| 117 | Selected event record Auto/Manual input diagnostics |
+| 118–127 | Reserved |
 
 The event-log schema, record fields and request/response transaction are
 specified in [`plc_event_logging_v1.md`](plc_event_logging_v1.md). Event
@@ -158,3 +160,19 @@ applied state used by the sequencer.
 | 9 | E-stop brake disable |
 | 10 | Sequencer Abort |
 | 11 | SafetyTripActive |
+
+### HR116/HR117 Auto/Manual diagnostics
+
+| Bit | Meaning |
+|---:|---|
+| 0 | Evaluated lower-channel `AutoMan_Sw1` process value |
+| 1 | High-order paired `AutoMan_Sw2` tag image; not an independent safety value |
+| 2 | Evaluated-channel value status from `%I22.0` |
+| 3 | Current production-sequencer `AutoMode` input |
+| 4 | Existing F-LAD `Seq_DB.AutoMode` result |
+
+HR116 is live; HR117 is the same packed value captured with the selected event
+record. These values are diagnostic only. The F-DI is configured to combine
+physical channels 0 and 4 internally using 1oo2 evaluation. Siemens permits
+only the lower channel process value to be used in the safety program; bit 1
+must therefore never be ANDed with bit 0 as if it were an independent channel.

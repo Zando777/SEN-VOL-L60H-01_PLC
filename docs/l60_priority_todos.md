@@ -34,6 +34,9 @@ The exact F-LAD Auto/Manual gating and the physical A/M relay contact behavior
 must be export-audited and tested on the machine before deciding the final
 handover implementation.
 
+Detailed evidence and the target authority boundary are recorded in
+[`manual_mode_authority_audit.md`](manual_mode_authority_audit.md).
+
 ### Required behavior
 
 Manual mode must mean:
@@ -55,11 +58,15 @@ Manual mode must mean:
 - [ ] Produce a complete Auto/Manual signal and contact-path diagram.
   - Include `AutoMan_Sw1`, `AutoMan_Sw2`, F-DI evaluation, A/M relay coils,
     every A/M relay contact and the downstream manual/autonomous circuits.
-- [ ] Export and review the current F-LAD equations for every physical output.
+- [x] Export and review the current F-LAD equations for every physical output.
   - Identify whether Auto mode is part of each output gate.
   - Separate autonomous command authority from always-active safety authority.
-- [ ] Replace the raw single-channel `AutoMan_Sw1` production input with the
-  validated dual-channel mode result from the F-program.
+- [ ] Replace the ambiguous `AutoMan_Sw1` production input with explicitly named
+  `AutoModeValidated`/`ManualModeValidated` results from the F-program.
+  - Openness and the Siemens module manual confirm `%I21.0` is already the
+    F-DI's internally evaluated 1oo2 result for physical channels 0+4.
+  - `%I22.0` is the required value-status bit; `%I21.4` must not be used as an
+    independent channel in the F-program.
 - [ ] Define the Auto-to-Manual transition during each phase:
   - wake/MCU boot;
   - ignition sequencing;
@@ -83,6 +90,10 @@ Manual mode must mean:
   production.
 - [ ] Add mode state, both raw channels, validated mode, handover state and
   rejection reason to Modbus telemetry and PLC event logging.
+  - Evaluated mode value, its high-order paired tag image, value status and
+    current standard/F-LAD mode results are implemented in HR116 and event
+    `0x0800`; validated mode, handover and rejection fields await the F-program
+    and contact-path changes.
 - [ ] Add a latched diagnostic for mode-channel discrepancy or invalid selector
   state.
 

@@ -36,6 +36,7 @@ VERSION : 0.1
       RawProp : Int;
       HeartbeatAge100ms : Word;
       ActiveTimeout100ms : Word;
+      ModeInputBits : Word;
    END_STRUCT;
 END_TYPE
 
@@ -85,6 +86,7 @@ VERSION : 0.1
       PreviousPressureFaultBits : Word;
       PreviousPressureBandBits : Word;
       PreviousPhysicalAckRequired : Bool;
+      PreviousModeInputBits : Word;
    END_VAR
 BEGIN
 END_DATA_BLOCK
@@ -179,6 +181,8 @@ BEGIN
       DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".HeartbeatAge) / 100);
    "ProductionLogData".Records[#index].ActiveTimeout100ms :=
       DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".ActiveTimeout) / 100);
+   "ProductionLogData".Records[#index].ModeInputBits :=
+      "ProductionIOData".ModeInputBits;
 
    "ProductionLogData".LastEventId := #EventId;
    "ProductionLogData".EventsWritten := "ProductionLogData".EventsWritten + 1;
@@ -200,7 +204,7 @@ END_FUNCTION
 FUNCTION "FC_ProductionLogging" : Void
 { S7_Optimized_Access := 'TRUE' }
 VERSION : 0.1
-// Edge-triggered production event coverage. At most twelve fixed checks can
+// Edge-triggered production event coverage. At most thirteen fixed checks can
 // write in one scan; there is no unbounded loop, queue or dynamic allocation.
    VAR_TEMP
       stateWord : Word;
@@ -241,6 +245,8 @@ BEGIN
       "ProductionLogState".PreviousPressureBandBits := "ProductionIOData".PressureBandBits;
       "ProductionLogState".PreviousPhysicalAckRequired :=
          "ProductionSeq_DB".PhysicalAckRequired;
+      "ProductionLogState".PreviousModeInputBits :=
+         "ProductionIOData".ModeInputBits;
       "ProductionLogState".Initialized := TRUE;
       "ProductionLogData".Initialized := TRUE;
    ELSE
@@ -398,6 +404,17 @@ BEGIN
          );
       END_IF;
 
+      IF "ProductionIOData".ModeInputBits <>
+         "ProductionLogState".PreviousModeInputBits THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0800,
+            Severity := USINT#2,
+            Source := USINT#3,
+            OldValue := "ProductionLogState".PreviousModeInputBits,
+            NewValue := "ProductionIOData".ModeInputBits
+         );
+      END_IF;
+
       "ProductionLogState".PreviousState := "ProductionSeq_DB".State;
       "ProductionLogState".PreviousFaultCode := "ProductionSeq_DB".FaultCode;
       "ProductionLogState".PreviousSafetyFlags := #safetyFlags;
@@ -412,6 +429,8 @@ BEGIN
       "ProductionLogState".PreviousPressureBandBits := "ProductionIOData".PressureBandBits;
       "ProductionLogState".PreviousPhysicalAckRequired :=
          "ProductionSeq_DB".PhysicalAckRequired;
+      "ProductionLogState".PreviousModeInputBits :=
+         "ProductionIOData".ModeInputBits;
    END_IF;
 END_FUNCTION
 
@@ -582,4 +601,11 @@ BEGIN
    "ProductionModbusData".hold[114] :=
       DINT_TO_WORD("ProductionLogData".EventsWritten);
    "ProductionModbusData".hold[115] := "ProductionLogData".LastEventId;
+   "ProductionModbusData".hold[116] := "ProductionIOData".ModeInputBits;
+   IF "ProductionLogReadData".ResponseFound THEN
+      "ProductionModbusData".hold[117] :=
+         "ProductionLogReadData".Response.ModeInputBits;
+   ELSE
+      "ProductionModbusData".hold[117] := W#16#0;
+   END_IF;
 END_FUNCTION

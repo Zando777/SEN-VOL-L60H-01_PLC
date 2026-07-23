@@ -34,8 +34,10 @@ require(PROD, (
     'EventId := W#16#0620',
     'EventId := W#16#0630',
     'EventId := W#16#0700',
+    'EventId := W#16#0800',
     '"ProductionModbusData".hold[56] := W#16#0100;',
     '"ProductionModbusData".hold[115] := "ProductionLogData".LastEventId;',
+    '"ProductionModbusData".hold[117]',
 ), "production logger")
 
 require(PROD_CYCLE, (
