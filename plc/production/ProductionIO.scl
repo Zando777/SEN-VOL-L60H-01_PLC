@@ -93,9 +93,6 @@ BEGIN
    #pressureBands.%X9 := "PressData".Shuttle2_bar <= 5.0;
    "ProductionIOData".PressureBandBits := #pressureBands;
 
-   // Semantic feedback consumed by the state machine.
-   "ProductionSeq_DB".AutoMode := "AutoMan_Sw1";
-
    // Observational mode diagnostics only. Do not derive control permission from
    // these bits in standard code. The F-DI is configured for 1oo2 evaluation
    // of channels 0+4: bit 0 is the evaluated lower-channel result; bit 1 is the
@@ -111,8 +108,12 @@ BEGIN
       byteOffset := 22,
       bitOffset := 0
    ); // AutoMan evaluated-channel value status (%I22.0)
+   "ProductionSeq_DB".ModeInputValid := #modeInputBits.%X2;
+   "ProductionSeq_DB".AutoMode := #modeInputBits.%X0 AND #modeInputBits.%X2;
    #modeInputBits.%X3 := "ProductionSeq_DB".AutoMode;
    #modeInputBits.%X4 := "Seq_DB".AutoMode;
+   #modeInputBits.%X5 := "ProductionSeq_DB".ManualHandoverActive;
+   #modeInputBits.%X6 := "ProductionSeq_DB".ModeFaultActive;
    "ProductionIOData".ModeInputBits := #modeInputBits;
 
    "ProductionSeq_DB".Abort := (NOT "ProductionIOData".EstopSafe) OR "PressData".PressTrip;

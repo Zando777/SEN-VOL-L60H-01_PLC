@@ -78,11 +78,16 @@ Manual mode must mean:
   - fault and communication loss.
 - [ ] Implement a dedicated Manual-handover state or F-program handover
   mechanism.
+  - Standard sequencer states `90` (Manual handover) and `91` (mode invalid)
+    are implemented in the isolated production draft.
+  - Physical authority transfer in F-LAD remains pending.
   - Drop A/M relays first.
   - Do not write autonomous safe defaults onto shared manual controls after the
     handover.
   - Starter 50 must not remain autonomously energized through the transition.
 - [ ] Define Manual-to-Auto entry conditions.
+  - Fresh INIT plus `SystemEnable` observed low after Auto selection is
+    implemented; the remaining secured/feedback conditions are pending.
   - Require a fresh explicit enable edge; never resume the old autonomous state.
   - Require a known stopped/secured condition, parking brake policy, healthy
     safety chain and compatible/fresh compute-box communication.

@@ -178,7 +178,7 @@ BEGIN
    "ProductionModbusData".telemetrySequence := "ProductionModbusData".telemetrySequence + W#16#1;
    "ProductionModbusData".hold[23] := "ProductionModbusData".telemetrySequence;
    "ProductionModbusData".hold[24] := W#16#0100; // PLC Modbus schema 1.0
-   "ProductionModbusData".hold[25] := W#16#0001; // production sequencer version 0.1
+   "ProductionModbusData".hold[25] := W#16#0002; // production sequencer version 0.2
    "ProductionModbusData".hold[26] := "ProductionModbusData".hold[3]; // observed command sequence
    "ProductionModbusData".hold[27] := #sequenceFlags;
 

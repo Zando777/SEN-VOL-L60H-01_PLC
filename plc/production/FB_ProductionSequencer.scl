@@ -14,6 +14,7 @@ VERSION : 0.1
 
    VAR_INPUT
       AutoMode : Bool;
+      ModeInputValid : Bool;                 // F-DI evaluated-channel value status
       Abort : Bool;                         // true safety abort: remote E-stop / safety pressure trip
       SafetyTripActive : Bool;               // diagnostic classification for physical acknowledgement
       ComputeAlive : Bool;                   // derived from changing heartbeat + compatible interface
@@ -69,6 +70,8 @@ VERSION : 0.1
       ShutdownComplete : Bool;
       ShutdownDefinitionRequired : Bool;
       VehicleStopConfirmationRequired : Bool;
+      ManualHandoverActive : Bool;
+      ModeFaultActive : Bool;
 
       State : Int := 0;
       PreviousState : Int := 0;
@@ -81,6 +84,9 @@ VERSION : 0.1
    END_VAR
 
    VAR
+      stateMachine : Int := 0;
+      faultCodeLatched : Word := W#16#0000;
+      crankAttemptsLatched : USInt := 0;
       prevStateInternal : Int := 0;
       stateChanged : Bool;
       stateTimer : TON_TIME;
@@ -141,6 +147,8 @@ VERSION : 0.1
       ST_SHUTDOWN_IGN_TBD : Int := 81;
       ST_SHUTDOWN_ACK : Int := 82;
       ST_SYSTEM_OFF : Int := 83;
+      ST_MANUAL_HANDOVER : Int := 90;
+      ST_MODE_INVALID : Int := 91;
 
       F_NONE : Word := W#16#0000;
       F_COMPUTE_START_TIMEOUT : Word := W#16#1001;
@@ -159,6 +167,7 @@ VERSION : 0.1
       F_COMM_STARTUP : Word := W#16#1301;
       F_COMM_OPERATIONAL : Word := W#16#1302;
       F_SAFETY_TRIP : Word := W#16#1401;
+      F_MODE_INVALID : Word := W#16#1501;
    END_VAR
 
 BEGIN
@@ -194,11 +203,12 @@ BEGIN
    #Req_Ign1554 := FALSE;
    #Req_IgnDR := FALSE;
    #Req_Ign50 := FALSE;
-   // In Auto the deterministic fallback is both autonomous E-stop brakes applied
-   // (physical outputs OFF). In Manual both are explicitly disengaged (physical
-   // outputs ON). The separate remote safety E-stop remains authoritative.
-   #Req_EstopBrakeCh1Apply := #AutoMode;
-   #Req_EstopBrakeCh2Apply := #AutoMode;
+   // In valid Auto the fallback applies both autonomous E-stop brakes. In valid
+   // Manual both are explicitly disengaged. Invalid/passivated mode input also
+   // requests the safe applied state; the future F-LAD mode branch remains the
+   // authoritative physical gate.
+   #Req_EstopBrakeCh1Apply := #AutoMode OR NOT #ModeInputValid;
+   #Req_EstopBrakeCh2Apply := #AutoMode OR NOT #ModeInputValid;
    // Verified machine polarity despite the legacy field name:
    // TRUE = parking brake ON/enabled; FALSE = brake OFF/disabled.
    #Req_ParkUnlock := TRUE;
@@ -210,6 +220,8 @@ BEGIN
    #ShutdownComplete := FALSE;
    #ShutdownDefinitionRequired := FALSE;
    #VehicleStopConfirmationRequired := FALSE;
+   #ManualHandoverActive := FALSE;
+   #ModeFaultActive := FALSE;
 
    #supplyPressureOK := (#Estop1_bar >= 120.0) AND (#Estop1_bar <= 150.0)
                         AND (#Estop2_bar >= 120.0) AND (#Estop2_bar <= 150.0)
@@ -217,71 +229,84 @@ BEGIN
 
    // Global shutdown commands. SystemEnable low is a maintained complete-shutdown
    // request after a cycle has begun. EngineStop leaves support power available.
-   IF (#State <> #ST_INIT) AND (#State < #ST_SHUTDOWN_BRAKES) THEN
+   IF (#stateMachine <> #ST_INIT) AND (#stateMachine < #ST_SHUTDOWN_BRAKES) THEN
       IF #systemShutdownPulse OR NOT #SystemEnable THEN
          #shutdownAll := TRUE;
          #TransitionReason := W#16#8002;
-         #State := #ST_SHUTDOWN_BRAKES;
+         #stateMachine := #ST_SHUTDOWN_BRAKES;
       ELSIF #engineStopPulse THEN
          #shutdownAll := FALSE;
          #TransitionReason := W#16#8001;
-         #State := #ST_SHUTDOWN_BRAKES;
+         #stateMachine := #ST_SHUTDOWN_BRAKES;
       END_IF;
    END_IF;
 
    // Communication loss is sequenced, not folded into the global SafeOK drop.
    // True safety aborts still override everything immediately below.
-   IF #CommLost AND (#State >= #ST_OPERATIONAL) AND (#State < #ST_SHUTDOWN_BRAKES) THEN
-      #FaultCode := #F_COMM_OPERATIONAL;
+   IF #CommLost AND (#stateMachine >= #ST_OPERATIONAL) AND (#stateMachine < #ST_SHUTDOWN_BRAKES) THEN
+      #faultCodeLatched := #F_COMM_OPERATIONAL;
       #TransitionReason := W#16#E302;
-      #State := #ST_COMM_LOST_STOP;
-   ELSIF #CommLost AND (#State > #ST_INIT) AND (#State < #ST_OPERATIONAL) THEN
-      #FaultCode := #F_COMM_STARTUP;
+      #stateMachine := #ST_COMM_LOST_STOP;
+   ELSIF #CommLost AND (#stateMachine > #ST_INIT) AND (#stateMachine < #ST_OPERATIONAL) THEN
+      #faultCodeLatched := #F_COMM_STARTUP;
       #TransitionReason := W#16#E301;
-      #State := #ST_FAULT_HOLD;
+      #stateMachine := #ST_FAULT_HOLD;
    END_IF;
 
-   // True safety abort always wins. Physical F-output removal occurs independently
-   // in F-LAD; this state update preserves a diagnostic and prevents auto-restart.
+   // True safety abort always wins. A valid Manual selection then transfers the
+   // standard sequencer to an explicit non-autonomous state. An invalid/passivated
+   // mode input is a major fault, never silently interpreted as Manual.
    IF #Abort THEN
       IF #SafetyTripActive THEN
-         #FaultCode := #F_SAFETY_TRIP;
+         #faultCodeLatched := #F_SAFETY_TRIP;
       END_IF;
       #TransitionReason := W#16#E401;
-      #State := #ST_INIT;
+      #stateMachine := #ST_INIT;
+      #systemEnableSeenLow := FALSE;
+   ELSIF NOT #ModeInputValid THEN
+      IF #stateMachine <> #ST_MODE_INVALID THEN
+         #TransitionReason := W#16#E403;
+         #systemEnableSeenLow := FALSE;
+      END_IF;
+      #faultCodeLatched := #F_MODE_INVALID;
+      #stateMachine := #ST_MODE_INVALID;
+   ELSIF NOT #AutoMode THEN
+      IF #stateMachine <> #ST_MANUAL_HANDOVER THEN
+         #TransitionReason := W#16#E402;
+         #systemEnableSeenLow := FALSE;
+      END_IF;
+      #stateMachine := #ST_MANUAL_HANDOVER;
+   ELSIF (#stateMachine = #ST_MANUAL_HANDOVER) OR (#stateMachine = #ST_MODE_INVALID) THEN
+      // Returning to Auto always starts at INIT. Force a new SystemEnable-low
+      // observation after Auto is selected; a high retained Modbus bit cannot
+      // resume or start the previous autonomous cycle.
+      #TransitionReason := W#16#E404;
+      #stateMachine := #ST_INIT;
       #systemEnableSeenLow := FALSE;
    END_IF;
 
-   // Leaving Auto always cancels the autonomous sequence. INIT explicitly keeps
-   // both PLC-controlled E-stop brake channels disengaged while Manual is active.
-   IF NOT #AutoMode THEN
-      #TransitionReason := W#16#E402;
-      #State := #ST_INIT;
-      #systemEnableSeenLow := FALSE;
-   END_IF;
-
-   #stateChanged := (#State <> #prevStateInternal);
+   #stateChanged := (#stateMachine <> #prevStateInternal);
    IF #stateChanged THEN
       #PreviousState := #prevStateInternal;
-      #prevStateInternal := #State;
+      #prevStateInternal := #stateMachine;
    END_IF;
    #stateTimer(IN := NOT #stateChanged, PT := T#120S);
    #StateElapsed := #stateTimer.ET;
 
-   CASE #State OF
+   CASE #stateMachine OF
       #ST_INIT:
          #brakeTestPassedLatched := FALSE;
-         #CrankAttempts := 0;
+         #crankAttemptsLatched := 0;
          IF #faultResetPulse AND #ResetPermitted AND NOT #Abort THEN
-            #FaultCode := #F_NONE;
+            #faultCodeLatched := #F_NONE;
             #TransitionReason := W#16#9001;
          END_IF;
          IF #AutoMode AND NOT #Abort AND #SystemEnable AND #systemEnableSeenLow
-            AND (#FaultCode = #F_NONE) THEN
+            AND (#faultCodeLatched = #F_NONE) THEN
             #systemEnableSeenLow := FALSE;
             #shutdownAll := FALSE;
             #TransitionReason := W#16#0001;
-            #State := #ST_WAKE_COMPUTE;
+            #stateMachine := #ST_WAKE_COMPUTE;
          END_IF;
 
       #ST_WAKE_COMPUTE:
@@ -293,11 +318,11 @@ BEGIN
          #Req_IgnDR := TRUE;
          IF #ComputeAlive THEN
             #TransitionReason := W#16#0101;
-            #State := #ST_POWER_MCU;
+            #stateMachine := #ST_POWER_MCU;
          ELSIF #stateTimer.ET >= T#60S THEN
-            #FaultCode := #F_COMPUTE_START_TIMEOUT;
+            #faultCodeLatched := #F_COMPUTE_START_TIMEOUT;
             #TransitionReason := W#16#E101;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_POWER_MCU:
@@ -308,11 +333,11 @@ BEGIN
          #Req_IgnDR := TRUE;
          IF #McuBooted THEN
             #TransitionReason := W#16#0201;
-            #State := #ST_MCU_SETTLE;
+            #stateMachine := #ST_MCU_SETTLE;
          ELSIF #stateTimer.ET >= T#60S THEN
-            #FaultCode := #F_MCU_BOOT_TIMEOUT;
+            #faultCodeLatched := #F_MCU_BOOT_TIMEOUT;
             #TransitionReason := W#16#E102;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_MCU_SETTLE:
@@ -323,7 +348,7 @@ BEGIN
          #Req_IgnDR := TRUE;
          IF #stateTimer.ET >= T#5S THEN
             #TransitionReason := W#16#0301;
-            #State := #ST_READY_TO_START;
+            #stateMachine := #ST_READY_TO_START;
          END_IF;
 
       #ST_READY_TO_START:
@@ -333,9 +358,9 @@ BEGIN
          #Req_Ign1554 := TRUE;
          #Req_IgnDR := TRUE;
          IF #engineStartPulse THEN
-            #CrankAttempts := 1;
+            #crankAttemptsLatched := 1;
             #TransitionReason := W#16#0401;
-            #State := #ST_IGN_ACCESSORY;
+            #stateMachine := #ST_IGN_ACCESSORY;
          END_IF;
 
       #ST_IGN_ACCESSORY:
@@ -344,7 +369,7 @@ BEGIN
          #Req_IgnR := TRUE;
          IF #stateTimer.ET >= T#1S THEN
             #TransitionReason := W#16#0501;
-            #State := #ST_IGN_RUN;
+            #stateMachine := #ST_IGN_RUN;
          END_IF;
 
       #ST_IGN_RUN:
@@ -355,7 +380,7 @@ BEGIN
          #Req_IgnDR := TRUE;
          IF #stateTimer.ET >= T#3S THEN
             #TransitionReason := W#16#0601;
-            #State := #ST_CRANK;
+            #stateMachine := #ST_CRANK;
          END_IF;
 
       #ST_CRANK:
@@ -365,11 +390,11 @@ BEGIN
          #Req_Ign50 := TRUE;
          IF #EngineRunning THEN
             #TransitionReason := W#16#0701;
-            #State := #ST_PRESS_BUILD;
+            #stateMachine := #ST_PRESS_BUILD;
          ELSIF #stateTimer.ET >= T#10S THEN
-            #FaultCode := #F_CRANK_TIMEOUT;
+            #faultCodeLatched := #F_CRANK_TIMEOUT;
             #TransitionReason := W#16#E103;
-            #State := #ST_CRANK_FAIL;
+            #stateMachine := #ST_CRANK_FAIL;
          END_IF;
 
       #ST_CRANK_FAIL:
@@ -379,19 +404,19 @@ BEGIN
          #Req_Ign1554 := TRUE;
          #Req_IgnDR := TRUE;
          IF #EngineRunning THEN
-            #FaultCode := #F_NONE;
+            #faultCodeLatched := #F_NONE;
             #TransitionReason := W#16#0801;
-            #State := #ST_PRESS_BUILD;
+            #stateMachine := #ST_PRESS_BUILD;
          ELSIF #reCrankPulse THEN
-            IF #CrankAttempts < #MaxCrankAttempts THEN
-               #CrankAttempts := #CrankAttempts + 1;
-               #FaultCode := #F_NONE;
+            IF #crankAttemptsLatched < #MaxCrankAttempts THEN
+               #crankAttemptsLatched := #crankAttemptsLatched + 1;
+               #faultCodeLatched := #F_NONE;
                #TransitionReason := W#16#0802;
-               #State := #ST_CRANK;
+               #stateMachine := #ST_CRANK;
             ELSE
-               #FaultCode := #F_CRANK_ATTEMPTS;
+               #faultCodeLatched := #F_CRANK_ATTEMPTS;
                #TransitionReason := W#16#E104;
-               #State := #ST_FAULT_HOLD;
+               #stateMachine := #ST_FAULT_HOLD;
             END_IF;
          END_IF;
 
@@ -407,20 +432,20 @@ BEGIN
          #Req_EstopBrakeCh1Apply := FALSE;
          #Req_EstopBrakeCh2Apply := FALSE;
          IF #PressureSensorFault THEN
-            #FaultCode := #F_PRESSURE_SENSOR;
+            #faultCodeLatched := #F_PRESSURE_SENSOR;
             #TransitionReason := W#16#E113;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #PressBuildOK THEN
             #TransitionReason := W#16#1001;
-            #State := #ST_BRAKE_RELEASE_PREP;
+            #stateMachine := #ST_BRAKE_RELEASE_PREP;
          ELSIF (#stateTimer.ET >= T#10S) AND NOT #ShuttleBuildOK THEN
-            #FaultCode := #F_SHUTTLE_BUILD_TIMEOUT;
+            #faultCodeLatched := #F_SHUTTLE_BUILD_TIMEOUT;
             #TransitionReason := W#16#E111;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #stateTimer.ET >= T#20S THEN
-            #FaultCode := #F_PRESSURE_BUILD_TIMEOUT;
+            #faultCodeLatched := #F_PRESSURE_BUILD_TIMEOUT;
             #TransitionReason := W#16#E112;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_BRAKE_RELEASE_PREP:
@@ -438,16 +463,16 @@ BEGIN
                                AND NOT #Rq_EstopBrakeCh1Applied
                                AND NOT #Rq_EstopBrakeCh2Applied;
          IF NOT #supplyPressureOK THEN
-            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #faultCodeLatched := #F_ESTOP_SUPPLY_BAND;
             #TransitionReason := W#16#E201;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #testedConditionOK THEN
             #TransitionReason := W#16#2001;
-            #State := #ST_BRAKE_CH1_APPLY;
+            #stateMachine := #ST_BRAKE_CH1_APPLY;
          ELSIF #stateTimer.ET >= T#1S THEN
-            #FaultCode := #F_BRAKE_CH1_REBUILD;
+            #faultCodeLatched := #F_BRAKE_CH1_REBUILD;
             #TransitionReason := W#16#E212;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_BRAKE_CH1_APPLY:
@@ -462,20 +487,20 @@ BEGIN
          #otherShuttleStable := ABS(#Shuttle2_bar - #otherShuttleBaseline) <= 10.0;
          #testedConditionOK := (#Shuttle1_bar <= 5.0) AND #Rq_EstopBrakeCh1Applied;
          IF NOT #supplyPressureOK THEN
-            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #faultCodeLatched := #F_ESTOP_SUPPLY_BAND;
             #TransitionReason := W#16#E201;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF NOT #otherShuttleStable THEN
-            #FaultCode := #F_BRAKE_CH1_APPLY;
+            #faultCodeLatched := #F_BRAKE_CH1_APPLY;
             #TransitionReason := W#16#E211;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #testedConditionOK THEN
             #TransitionReason := W#16#2101;
-            #State := #ST_BRAKE_CH1_REBUILD;
+            #stateMachine := #ST_BRAKE_CH1_REBUILD;
          ELSIF #stateTimer.ET >= T#1S THEN
-            #FaultCode := #F_BRAKE_CH1_APPLY;
+            #faultCodeLatched := #F_BRAKE_CH1_APPLY;
             #TransitionReason := W#16#E211;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_BRAKE_CH1_REBUILD:
@@ -491,20 +516,20 @@ BEGIN
          #testedConditionOK := (#Shuttle1_bar >= 30.0) AND (#Shuttle1_bar <= 50.0)
                                AND NOT #Rq_EstopBrakeCh1Applied;
          IF NOT #supplyPressureOK THEN
-            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #faultCodeLatched := #F_ESTOP_SUPPLY_BAND;
             #TransitionReason := W#16#E201;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF NOT #otherShuttleStable THEN
-            #FaultCode := #F_BRAKE_CH1_REBUILD;
+            #faultCodeLatched := #F_BRAKE_CH1_REBUILD;
             #TransitionReason := W#16#E212;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #testedConditionOK THEN
             #TransitionReason := W#16#2201;
-            #State := #ST_BRAKE_CH2_APPLY;
+            #stateMachine := #ST_BRAKE_CH2_APPLY;
          ELSIF #stateTimer.ET >= T#1S THEN
-            #FaultCode := #F_BRAKE_CH1_REBUILD;
+            #faultCodeLatched := #F_BRAKE_CH1_REBUILD;
             #TransitionReason := W#16#E212;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_BRAKE_CH2_APPLY:
@@ -519,20 +544,20 @@ BEGIN
          #otherShuttleStable := ABS(#Shuttle1_bar - #otherShuttleBaseline) <= 10.0;
          #testedConditionOK := (#Shuttle2_bar <= 5.0) AND #Rq_EstopBrakeCh2Applied;
          IF NOT #supplyPressureOK THEN
-            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #faultCodeLatched := #F_ESTOP_SUPPLY_BAND;
             #TransitionReason := W#16#E201;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF NOT #otherShuttleStable THEN
-            #FaultCode := #F_BRAKE_CH2_APPLY;
+            #faultCodeLatched := #F_BRAKE_CH2_APPLY;
             #TransitionReason := W#16#E221;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #testedConditionOK THEN
             #TransitionReason := W#16#2301;
-            #State := #ST_BRAKE_CH2_REBUILD;
+            #stateMachine := #ST_BRAKE_CH2_REBUILD;
          ELSIF #stateTimer.ET >= T#1S THEN
-            #FaultCode := #F_BRAKE_CH2_APPLY;
+            #faultCodeLatched := #F_BRAKE_CH2_APPLY;
             #TransitionReason := W#16#E221;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_BRAKE_CH2_REBUILD:
@@ -548,21 +573,21 @@ BEGIN
          #testedConditionOK := (#Shuttle2_bar >= 30.0) AND (#Shuttle2_bar <= 50.0)
                                AND NOT #Rq_EstopBrakeCh2Applied;
          IF NOT #supplyPressureOK THEN
-            #FaultCode := #F_ESTOP_SUPPLY_BAND;
+            #faultCodeLatched := #F_ESTOP_SUPPLY_BAND;
             #TransitionReason := W#16#E201;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF NOT #otherShuttleStable THEN
-            #FaultCode := #F_BRAKE_CH2_REBUILD;
+            #faultCodeLatched := #F_BRAKE_CH2_REBUILD;
             #TransitionReason := W#16#E222;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          ELSIF #testedConditionOK THEN
             #brakeTestPassedLatched := TRUE;
             #TransitionReason := W#16#2401;
-            #State := #ST_READY_FOR_DRIVE;
+            #stateMachine := #ST_READY_FOR_DRIVE;
          ELSIF #stateTimer.ET >= T#1S THEN
-            #FaultCode := #F_BRAKE_CH2_REBUILD;
+            #faultCodeLatched := #F_BRAKE_CH2_REBUILD;
             #TransitionReason := W#16#E222;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_READY_FOR_DRIVE:
@@ -578,7 +603,7 @@ BEGIN
                                         AND NOT #Rq_EstopBrakeCh2Applied;
          IF #ReadyForDrive AND #EstopBrakeChannelsReleased AND #beginDrivingPulse THEN
             #TransitionReason := W#16#3001;
-            #State := #ST_ENABLE_AM;
+            #stateMachine := #ST_ENABLE_AM;
          END_IF;
 
       #ST_ENABLE_AM:
@@ -592,7 +617,7 @@ BEGIN
          #Req_EstopBrakeCh2Apply := FALSE;
          IF #stateTimer.ET >= T#250MS THEN
             #TransitionReason := W#16#3101;
-            #State := #ST_PARK_UNLOCK;
+            #stateMachine := #ST_PARK_UNLOCK;
          END_IF;
 
       #ST_PARK_UNLOCK:
@@ -608,11 +633,11 @@ BEGIN
          #Req_ParkUnlock := FALSE;
          IF NOT #Rq_ParkUnlock AND #Rq_ParkLock THEN
             #TransitionReason := W#16#3201;
-            #State := #ST_OPERATIONAL;
+            #stateMachine := #ST_OPERATIONAL;
          ELSIF #stateTimer.ET >= T#5S THEN
-            #FaultCode := #F_PARK_FEEDBACK;
+            #faultCodeLatched := #F_PARK_FEEDBACK;
             #TransitionReason := W#16#E230;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_OPERATIONAL:
@@ -633,10 +658,10 @@ BEGIN
          #Req_MainPwr := TRUE;
          #Req_MCU := TRUE;
          IF #engineStartPulse AND #SystemEnable THEN
-            #CrankAttempts := 1;
-            #FaultCode := #F_NONE;
+            #crankAttemptsLatched := 1;
+            #faultCodeLatched := #F_NONE;
             #TransitionReason := W#16#4001;
-            #State := #ST_IGN_ACCESSORY;
+            #stateMachine := #ST_IGN_ACCESSORY;
          END_IF;
 
       #ST_FAULT_HOLD:
@@ -650,12 +675,12 @@ BEGIN
             #Req_IgnDR := TRUE;
          END_IF;
          IF #faultResetPulse AND #ResetPermitted AND NOT #Abort THEN
-            #FaultCode := #F_NONE;
+            #faultCodeLatched := #F_NONE;
             #TransitionReason := W#16#6001;
             IF #EngineRunning THEN
-               #State := #ST_PRESS_BUILD;
+               #stateMachine := #ST_PRESS_BUILD;
             ELSE
-               #State := #ST_INIT;
+               #stateMachine := #ST_INIT;
                #systemEnableSeenLow := FALSE;
             END_IF;
          END_IF;
@@ -684,11 +709,11 @@ BEGIN
          IF #Rq_EstopBrakeCh1Applied AND #Rq_EstopBrakeCh2Applied
             AND #Rq_ParkUnlock AND NOT #Rq_ParkLock THEN
             #TransitionReason := W#16#8003;
-            #State := #ST_SHUTDOWN_IGN_TBD;
+            #stateMachine := #ST_SHUTDOWN_IGN_TBD;
          ELSIF #stateTimer.ET >= T#5S THEN
-            #FaultCode := #F_PARK_FEEDBACK;
+            #faultCodeLatched := #F_PARK_FEEDBACK;
             #TransitionReason := W#16#E803;
-            #State := #ST_FAULT_HOLD;
+            #stateMachine := #ST_FAULT_HOLD;
          END_IF;
 
       #ST_SHUTDOWN_IGN_TBD:
@@ -704,7 +729,7 @@ BEGIN
             #ShutdownDefinitionRequired := TRUE;
          ELSE
             #TransitionReason := W#16#8101;
-            #State := #ST_SHUTDOWN_ACK;
+            #stateMachine := #ST_SHUTDOWN_ACK;
          END_IF;
 
       #ST_SHUTDOWN_ACK:
@@ -713,29 +738,44 @@ BEGIN
          IF #shutdownAll THEN
             IF #shutdownAckPulse THEN
                #TransitionReason := W#16#8201;
-               #State := #ST_SYSTEM_OFF;
+               #stateMachine := #ST_SYSTEM_OFF;
             END_IF;
          ELSE
             #TransitionReason := W#16#8202;
-            #State := #ST_ENGINE_OFF_READY;
+            #stateMachine := #ST_ENGINE_OFF_READY;
          END_IF;
 
       #ST_SYSTEM_OFF:
          #ShutdownComplete := TRUE;
          IF NOT #SystemEnable THEN
             #TransitionReason := W#16#8301;
-            #State := #ST_INIT;
+            #stateMachine := #ST_INIT;
          END_IF;
 
+      #ST_MANUAL_HANDOVER:
+         // The standard sequencer owns no autonomous cycle in Manual. Request
+         // defaults are diagnostic only after the F-program has transferred
+         // the physical contact path to Manual.
+         #ManualHandoverActive := TRUE;
+
+      #ST_MODE_INVALID:
+         // Value status false includes discrepancy, channel fault or passivation.
+         // Do not treat the substitute process value as a valid Manual selection.
+         #ModeFaultActive := TRUE;
+
       ELSE
-         #FaultCode := W#16#FFFF;
+         #faultCodeLatched := W#16#FFFF;
          #TransitionReason := W#16#EFFF;
-         #State := #ST_FAULT_HOLD;
+         #stateMachine := #ST_FAULT_HOLD;
    END_CASE;
 
+   #State := #stateMachine;
+   #FaultCode := #faultCodeLatched;
+   #CrankAttempts := #crankAttemptsLatched;
    #EstopBrakeTestPassed := #brakeTestPassedLatched;
-   #MajorFaultActive := (#FaultCode <> #F_NONE);
+   #MajorFaultActive := (#faultCodeLatched <> #F_NONE);
    #PhysicalAckRequired := #SafetyTripActive
-                           OR (#FaultCode = #F_COMM_OPERATIONAL)
-                           OR (#FaultCode = #F_PARK_FEEDBACK);
+                           OR (#faultCodeLatched = #F_COMM_OPERATIONAL)
+                           OR (#faultCodeLatched = #F_PARK_FEEDBACK)
+                           OR (#faultCodeLatched = #F_MODE_INVALID);
 END_FUNCTION_BLOCK

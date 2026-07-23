@@ -44,7 +44,7 @@ A static writable bit alone is not accepted as proof of communication.
 | 22 | Crank-attempt count |
 | 23 | Incrementing PLC telemetry sequence |
 | 24 | PLC schema version (`16#0100`) |
-| 25 | Sequencer version (`16#0001`) |
+| 25 | Sequencer version (`16#0002`) |
 | 26 | Last observed command sequence from HR3 |
 | 27 | Echo of active command bits |
 | 28–31 | Reserved |
@@ -170,9 +170,17 @@ applied state used by the sequencer.
 | 2 | Evaluated-channel value status from `%I22.0` |
 | 3 | Current production-sequencer `AutoMode` input |
 | 4 | Existing F-LAD `Seq_DB.AutoMode` result |
+| 5 | Production sequencer Manual-handover state active |
+| 6 | Production sequencer mode-input fault active |
 
 HR116 is live; HR117 is the same packed value captured with the selected event
 record. These values are diagnostic only. The F-DI is configured to combine
 physical channels 0 and 4 internally using 1oo2 evaluation. Siemens permits
 only the lower channel process value to be used in the safety program; bit 1
 must therefore never be ANDed with bit 0 as if it were an independent channel.
+
+Production sequencer state `90` is the explicit Manual handover/inactive state.
+State `91` means the evaluated selector value status is false (for example
+discrepancy, channel fault or passivation). Returning to Auto always goes
+through INIT and requires `SystemEnable` to be observed low after Auto was
+selected before a fresh rising enable can start a cycle.

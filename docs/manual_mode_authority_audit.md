@@ -190,6 +190,8 @@ Production telemetry HR116 and every new PLC event record now capture:
 - bit 2: evaluated-channel value status read from `%I22.0`;
 - bit 3: current production-sequencer `AutoMode` input;
 - bit 4: current F-LAD `Seq_DB.AutoMode`.
+- bit 5: production Manual-handover state active;
+- bit 6: production mode-input fault active.
 
 Event `0x0800` records changes. This instrumentation is observational and is not
 used by any output or sequence decision.
@@ -200,19 +202,26 @@ created under Safety Administration login as part of the controlled F-program
 edit. The current standard telemetry uses a read-only `PEEK_BOOL` and does not
 write or control any F-I/O.
 
+The standard sequencer now implements state `90` for Manual handover and state
+`91` for invalid mode input. A return to Auto always goes through INIT and
+requires a new `SystemEnable` low-then-high sequence after Auto selection. This
+removes autonomous state resumption on the standard side; it does not replace
+the pending F-LAD and physical-contact authority changes.
+
 ### Offline verification
 
-The three updated standard sources were generated in
+The updated standard sequencer, I/O packing, Modbus and logging sources were generated in
 `volvo_l60h_production_dev`, compiled and saved through Openness:
 
 - compile errors: `0`;
 - compile warnings: `0`;
 - existing safety program: consistent and not recompiled;
 - verified post-save export SHA-256:
-  `97195831af856bee6cc982b6b31209e3c6e79ca1613d252848361a46545f2435`.
+  `a40f855013f219bd82a1bc735115fa8674018d120a138fbc4b62f2b619364196`.
 
-The post-save XML export contains `ModeInputBits`, the `%I22.0` read, event
-`0x0800`, HR116 and HR117. The unrelated pre-existing inconsistent
+The post-save XML export contains states 90/91, the initialized internal state
+memory, `ModeInputBits`, the `%I22.0` read, event `0x0800`, HR116 and HR117.
+The unrelated pre-existing inconsistent
 `Watch table_2` remains non-exportable; all program blocks exported normally.
 
 ## Open physical verification

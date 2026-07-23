@@ -48,6 +48,22 @@ compiled as an F-project, downloaded, or approved for machine operation.
 - Phase-dependent heartbeat watchdog with 60-second startup/crank and
   configurable 3-second operational defaults.
 
+## Auto/Manual handover
+
+- State `90` is an explicit Manual-handover/inactive state. Entering it cancels
+  the autonomous cycle and no previous state can resume.
+- State `91` is an invalid selector input (value status false). It is a major
+  fault, requests both E-stop brakes applied and requires physical
+  acknowledgement.
+- `%I21.0` is the F-DI internally evaluated 1oo2 result for channels 0+4.
+  `%I22.0` is its value status. The high-order `%I21.4` bit is not used as an
+  independent channel.
+- Returning to Auto forces INIT and clears the enable guard. The PLC must see
+  `SystemEnable` low after Auto selection, then a new high, before starting.
+- Physical Manual ownership still depends on the pending F-LAD authority split
+  and verified A/M relay contact path; this standard state alone is not approved
+  for production download.
+
 ## Deliberately incomplete / blocked
 
 ### E-stop hardware polarity
