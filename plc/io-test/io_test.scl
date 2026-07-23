@@ -1,9 +1,10 @@
 DATA_BLOCK "ModbusData"
 { S7_Optimized_Access := 'FALSE' }
 VERSION : 1.0
-// Dedicated non-retentive test map. HR10 is the actual PLC output-image feedback.
+// Dedicated test map. HR10 is the actual PLC output-image feedback. ARM plus
+// the changing heartbeat remain mandatory even if TIA preserves DB start data.
    VAR
-      hold : Array[0..21] of Word;
+      hold : Array[0..127] of Word;
       TestManualEnable : Bool; // test-only F-safety permission to operate with A/M in M
       TestAutoOK : Bool;       // physical Auto OR the explicit test-only permission
       TelemetrySequence : Word; // increments every FC call so the GUI can detect stale PLC data
@@ -26,6 +27,8 @@ VERSION : 1.0
 // HR13 = W#16#4D4D to permit outputs with A/M in M; effective only while armed/heartbeat active.
 // HR14 = effective request image; HR15 = detailed safety inputs; HR16 = PLC telemetry sequence.
 // HR17..HR21 = signed raw analog inputs in the same order as HR3..HR7.
+// HR22..HR24 request one PLC event-log record; HR56..HR107 return the
+// coherent record and logger metadata. See docs/plc_event_logging_v1.md.
    VAR_TEMP
       requestMask : Word;
       crankStage : Word;
@@ -242,19 +245,10 @@ BEGIN
    "ModbusData".hold[19] := INT_TO_WORD("Press_Shuttle_2");
    "ModbusData".hold[20] := INT_TO_WORD("Press_Estop_2");
    "ModbusData".hold[21] := INT_TO_WORD("Press_Prop");
+
+   // Observational logging is deliberately called from this standard FC so
+   // adding it does not modify Main or the F-program. Main calls FC_OutputTest
+   // twice per scan; edge detection prevents duplicate event records.
+   "FC_IoTestLogging"();
+   "FC_IoTestLogModbus"();
 END_FUNCTION
-
-
-ORGANIZATION_BLOCK "Main"
-{ S7_Optimized_Access := 'TRUE' }
-VERSION : 1.0
-// Dedicated output-test cycle. The production sequencer and pressure monitor are not called.
-BEGIN
-   "FC_ModbusServer"();
-   "FC_Pressure"();
-
-   // First pass presents ARM to the watchdog; second pass immediately applies its result.
-   "FC_OutputTest"();
-   "FB_CommWatch_DB"(Timeout := T#2S);
-   "FC_OutputTest"();
-END_ORGANIZATION_BLOCK

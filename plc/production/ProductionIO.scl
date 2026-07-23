@@ -31,7 +31,7 @@ BEGIN
    #outputImage.%X4 := "Ign_15_54";
    #outputImage.%X5 := "Ign_DR";
    #outputImage.%X6 := "Ign_50";
-   // Confirmed machine semantics: energized E-stop solenoid = brake applied.
+   // Confirmed machine semantics: energized E-stop solenoid = brake disengaged.
    #outputImage.%X7 := "Sol_Estop";
    #outputImage.%X8 := "Sol_Estop_2";
    #outputImage.%X9 := "ParkBrake_Unlock";

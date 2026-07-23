@@ -36,32 +36,35 @@ placed in the F-safety decision path or inhibit deterministic control.
 
 ## Gate 1 — PLC event logging foundation
 
-- [ ] Define `UDT_PlcEventRecord`.
+- [x] Define version-0.1 production and I/O-test event-record UDTs.
   - Required fields: monotonically increasing event sequence, PLC timestamp,
     boot/session ID, event ID, severity, current/previous state, fault code,
     transition reason and source block.
   - Include snapshots of command bits, request image, physical Q image, F-RQ
     image, mismatch image, safety flags, brake flags and communication status.
   - Include five scaled pressures and five signed raw analog values.
-- [ ] Create `LoggingData` DB with:
+- [x] Create version-0.1 logging DBs with:
   - fixed-size event ring;
   - write index and valid-record count;
   - next event sequence;
   - wrap/overwrite counter;
   - boot/session ID;
   - logger health and diagnostic counters.
-- [ ] Implement a standard-program `FB_EventLogger`.
+- [x] Implement bounded standard-program event loggers (`FC_*LogEvent` plus
+  fixed edge detectors).
   - Non-blocking, bounded execution time and no dynamic allocation.
   - One scan may enqueue a bounded number of events.
   - Full buffer overwrites the oldest record and increments an overwrite
     counter; it must never stop the sequencer.
-- [ ] Obtain and validate the PLC system timestamp.
+- [x] Obtain the PLC system timestamp with `RD_SYS_T` and publish its return
+  status/validity.
   - Log UTC or record the configured timezone/offset unambiguously.
   - Set a `TimeValid` flag so an unset CPU clock cannot look trustworthy.
-- [ ] Log a boot/session event on every startup.
+- [x] Log a boot/session event on every startup.
   - Include restart type if available, software/schema versions, collective
     F-signature reference and previous retained logger state.
-- [ ] Add logger self-diagnostics.
+- [x] Add time-read, ring-overwrite, invalid-index, event-count and last-event
+  diagnostics.
   - Invalid timestamp, enqueue overflow, ring overwrite, bad event ID and
     unexpected index recovery must be observable through Modbus.
 - [ ] Prove logging cannot affect control.
@@ -70,9 +73,9 @@ placed in the F-safety decision path or inhibit deterministic control.
 
 ## Gate 2 — Event coverage
 
-- [ ] Log every sequencer state transition once.
+- [x] Log every production sequencer state transition once.
   - Snapshot old state, new state and `TransitionReason`.
-- [ ] Log every fault assertion, fault replacement and fault reset.
+- [x] Log production fault assertion, replacement and reset.
   - Do not lose the original fault when a secondary fault occurs.
 - [ ] Log all safety-source edges:
   - `SafeOK`;
@@ -87,9 +90,9 @@ placed in the F-safety decision path or inhibit deterministic control.
   - Include command sequence, command bits, accepted/rejected mask and rejection
     reason such as wrong state, stale sequence, missing acknowledgement or
     incompatible schema.
-- [ ] Log heartbeat lifecycle.
+- [x] Log communication-lost and recovered edges.
   - First valid heartbeat, timeout phase/value, communication lost and recovery.
-- [ ] Log output changes and discrepancies.
+- [x] Log request, physical Q, F-RQ and mismatch image changes.
   - Request edge, Q edge, F-RQ edge, mismatch asserted, mismatch cleared and
     mismatch timeout/trip.
 - [ ] Log pressure events.
@@ -116,7 +119,8 @@ placed in the F-safety decision path or inhibit deterministic control.
 - [ ] Add pre-trigger/post-trigger retention if memory allows.
   - Preserve samples around first fault, safety trip, communication loss and
     brake-test failure.
-- [ ] Extend the production Modbus schema beyond HR55.
+- [x] Extend the production Modbus schema beyond HR55 with coherent indexed
+  event retrieval.
   - Logger metadata: schema, newest/oldest sequence, count, overwrite count,
     health and time validity.
   - Indexed event-record read window with request sequence and coherent response
@@ -127,7 +131,8 @@ placed in the F-safety decision path or inhibit deterministic control.
   - Require compatible schema, fresh command sequence, permitted machine state
     and deliberate command edge.
   - Log the clear request before clearing or preserve an audit marker.
-- [ ] Extend the compute-box/commissioning logger.
+- [x] Extend the I/O-test commissioning GUI to download PLC records by sequence
+  into a separate CSV and detect overwritten gaps.
   - Download PLC records by sequence without duplication.
   - Detect gaps/overwrites.
   - Write human-readable CSV/JSON with event-code decoding.
@@ -137,6 +142,12 @@ placed in the F-safety decision path or inhibit deterministic control.
 
 ## Gate 4 — Performance and persistence verification
 
+- [ ] Correct and verify I/O-test Modbus command remanence before promotion.
+  - The 23 July Openness export shows the existing `ModbusData` members as
+    `Retain`, despite the prior source comment calling the map non-retentive.
+  - ARM and a fresh heartbeat still prevent stale output activation, but HR0,
+    HR1, HR11 and HR13 must be explicitly made non-retentive or cleared on the
+    first scan and then restart-tested.
 - [ ] Measure normal and worst-case OB1 cycle time before and after logging.
 - [ ] Measure work-memory/load-memory use and retained DB size.
 - [ ] Generate simultaneous event storms and confirm bounded scan time.

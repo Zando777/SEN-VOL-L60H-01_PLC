@@ -32,4 +32,6 @@ BEGIN
    // publishing the complete telemetry snapshot.
    "FC_ProductionIOPack"();
    "FC_ProductionModbusOut"();
+   "FC_ProductionLogging"();
+   "FC_ProductionLogModbus"();
 END_FUNCTION

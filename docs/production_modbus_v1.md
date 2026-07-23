@@ -23,7 +23,10 @@ observed value in HR26.
 | 1 | — | Heartbeat | Increment continuously |
 | 2 | — | Compute schema version | Must equal `16#0100` |
 | 3 | — | Command sequence | Increment for each new command set |
-| 4–15 | — | Reserved | Write zero |
+| 4 | — | Event-log requested sequence low word | Zero with HR5 zero selects newest |
+| 5 | — | Event-log requested sequence high word | Used with HR4 |
+| 6 | — | Event-log request token | Change after writing HR4/HR5 |
+| 7–15 | — | Reserved | Write zero |
 
 `ComputeAlive` requires a changing heartbeat, compatible HR2 and ComputeReady.
 A static writable bit alone is not accepted as proof of communication.
@@ -58,7 +61,14 @@ A static writable bit alone is not accepted as proof of communication.
 | 53 | Brake-test/request/readback flags |
 | 54 | Heartbeat age in 100 ms units |
 | 55 | Active heartbeat timeout in 100 ms units |
-| 56–127 | Reserved for detailed diagnostics/fault history |
+| 56–67 | Event logger metadata and coherent-response status |
+| 68–111 | Requested event record |
+| 112–115 | Event logger diagnostic counters |
+| 116–127 | Reserved |
+
+The event-log schema, record fields and request/response transaction are
+specified in [`plc_event_logging_v1.md`](plc_event_logging_v1.md). Event
+retrieval is diagnostic only and does not participate in machine control.
 
 ### HR16 status flags
 

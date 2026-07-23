@@ -1,0 +1,463 @@
+TYPE "UDT_IoTestEventRecord"
+VERSION : 0.1
+   STRUCT
+      Sequence : DInt;
+      BootSession : DInt;
+      Timestamp : DTL;
+      TimeStatus : Int;
+      EventId : Word;
+      Severity : USInt;
+      OldValue : Word;
+      NewValue : Word;
+      RequestedMask : Word;
+      ActiveMask : Word;
+      CrankStage : Word;
+      Status : Word;
+      OutputImage : Word;
+      RelayReadback : Word;
+      EffectiveRequest : Word;
+      SafetyDetail : Word;
+      PressureBands : Word;
+      Shuttle1_x10 : Int;
+      Shuttle2_x10 : Int;
+      Estop1_x10 : Int;
+      Estop2_x10 : Int;
+      Prop_x10 : Int;
+      RawShuttle1 : Int;
+      RawShuttle2 : Int;
+      RawEstop1 : Int;
+      RawEstop2 : Int;
+      RawProp : Int;
+   END_STRUCT;
+END_TYPE
+
+
+DATA_BLOCK "IoTestLogData"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Commissioning-only bounded event history. It observes the I/O-test program
+// and is never consumed by F-LAD or an output request.
+   VAR
+      Records : Array[0..127] of "UDT_IoTestEventRecord";
+      WriteIndex : Int;
+      ValidCount : Int;
+      NextSequence : DInt := 1;
+      OverwriteCount : DInt;
+      BootSession : DInt;
+      TimeReadErrors : DInt;
+      InvalidIndexRecoveries : DInt;
+      EventsWritten : DInt;
+      Initialized : Bool;
+      LastTimeValid : Bool;
+      LastEventId : Word;
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+DATA_BLOCK "IoTestLogState"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR
+      Initialized : Bool;
+      PreviousRequestedMask : Word;
+      PreviousArmWord : Word;
+      PreviousManualEnableWord : Word;
+      PreviousCrankStage : Word;
+      PreviousActiveMask : Word;
+      PreviousStatus : Word;
+      PreviousOutputImage : Word;
+      PreviousRelayReadback : Word;
+      PreviousEffectiveRequest : Word;
+      PreviousSafetyDetail : Word;
+      PreviousPressureBands : Word;
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+DATA_BLOCK "IoTestLogReadData"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR
+      LastRequestToken : Word;
+      RequestProcessed : Bool;
+      ResponseFound : Bool;
+      ResponseStatus : Word;
+      Response : "UDT_IoTestEventRecord";
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+FUNCTION "FC_IoTestLogEvent" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT
+      EventId : Word;
+      Severity : USInt;
+      OldValue : Word;
+      NewValue : Word;
+      PressureBands : Word;
+   END_VAR
+   VAR_TEMP
+      index : Int;
+      timestamp : DTL;
+      timeStatus : Int;
+   END_VAR
+BEGIN
+   #index := "IoTestLogData".WriteIndex;
+   IF (#index < 0) OR (#index > 127) THEN
+      #index := 0;
+      "IoTestLogData".WriteIndex := 0;
+      "IoTestLogData".InvalidIndexRecoveries :=
+         "IoTestLogData".InvalidIndexRecoveries + 1;
+   END_IF;
+
+   #timeStatus := RD_SYS_T(#timestamp);
+   "IoTestLogData".LastTimeValid := #timeStatus = 0;
+   IF #timeStatus <> 0 THEN
+      "IoTestLogData".TimeReadErrors := "IoTestLogData".TimeReadErrors + 1;
+   END_IF;
+
+   "IoTestLogData".Records[#index].Sequence := "IoTestLogData".NextSequence;
+   "IoTestLogData".Records[#index].BootSession := "IoTestLogData".BootSession;
+   "IoTestLogData".Records[#index].Timestamp := #timestamp;
+   "IoTestLogData".Records[#index].TimeStatus := #timeStatus;
+   "IoTestLogData".Records[#index].EventId := #EventId;
+   "IoTestLogData".Records[#index].Severity := #Severity;
+   "IoTestLogData".Records[#index].OldValue := #OldValue;
+   "IoTestLogData".Records[#index].NewValue := #NewValue;
+   "IoTestLogData".Records[#index].RequestedMask := "ModbusData".hold[0];
+   "IoTestLogData".Records[#index].ActiveMask := "ModbusData".hold[2];
+   "IoTestLogData".Records[#index].CrankStage := "ModbusData".hold[11];
+   "IoTestLogData".Records[#index].Status := "ModbusData".hold[9];
+   "IoTestLogData".Records[#index].OutputImage := "ModbusData".hold[10];
+   "IoTestLogData".Records[#index].RelayReadback := "ModbusData".hold[12];
+   "IoTestLogData".Records[#index].EffectiveRequest := "ModbusData".hold[14];
+   "IoTestLogData".Records[#index].SafetyDetail := "ModbusData".hold[15];
+   "IoTestLogData".Records[#index].PressureBands := #PressureBands;
+   "IoTestLogData".Records[#index].Shuttle1_x10 :=
+      REAL_TO_INT("PressData".Shuttle1_bar * 10.0);
+   "IoTestLogData".Records[#index].Shuttle2_x10 :=
+      REAL_TO_INT("PressData".Shuttle2_bar * 10.0);
+   "IoTestLogData".Records[#index].Estop1_x10 :=
+      REAL_TO_INT("PressData".Estop1_bar * 10.0);
+   "IoTestLogData".Records[#index].Estop2_x10 :=
+      REAL_TO_INT("PressData".Estop2_bar * 10.0);
+   "IoTestLogData".Records[#index].Prop_x10 :=
+      REAL_TO_INT("PressData".Prop_bar * 10.0);
+   "IoTestLogData".Records[#index].RawShuttle1 := "Press_Shuttle_1";
+   "IoTestLogData".Records[#index].RawShuttle2 := "Press_Shuttle_2";
+   "IoTestLogData".Records[#index].RawEstop1 := "Press_Estop_1";
+   "IoTestLogData".Records[#index].RawEstop2 := "Press_Estop_2";
+   "IoTestLogData".Records[#index].RawProp := "Press_Prop";
+
+   "IoTestLogData".LastEventId := #EventId;
+   "IoTestLogData".EventsWritten := "IoTestLogData".EventsWritten + 1;
+   "IoTestLogData".NextSequence := "IoTestLogData".NextSequence + 1;
+   IF "IoTestLogData".ValidCount < 128 THEN
+      "IoTestLogData".ValidCount := "IoTestLogData".ValidCount + 1;
+   ELSE
+      "IoTestLogData".OverwriteCount := "IoTestLogData".OverwriteCount + 1;
+   END_IF;
+
+   #index := #index + 1;
+   IF #index > 127 THEN
+      #index := 0;
+   END_IF;
+   "IoTestLogData".WriteIndex := #index;
+END_FUNCTION
+
+
+FUNCTION "FC_IoTestLogging" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Fixed edge checks: no unbounded work and no effect on the test controller.
+   VAR_TEMP
+      pressureBands : Word;
+   END_VAR
+BEGIN
+   #pressureBands := W#16#0;
+   #pressureBands.%X0 := ("PressData".Shuttle1_bar >= 30.0)
+                          AND ("PressData".Shuttle1_bar <= 50.0);
+   #pressureBands.%X1 := ("PressData".Shuttle2_bar >= 30.0)
+                          AND ("PressData".Shuttle2_bar <= 50.0);
+   #pressureBands.%X2 := ("PressData".Estop1_bar >= 120.0)
+                          AND ("PressData".Estop1_bar <= 150.0);
+   #pressureBands.%X3 := ("PressData".Estop2_bar >= 120.0)
+                          AND ("PressData".Estop2_bar <= 150.0);
+   #pressureBands.%X4 := ("PressData".Prop_bar >= 120.0)
+                          AND ("PressData".Prop_bar <= 150.0);
+   #pressureBands.%X8 := "PressData".Shuttle1_bar <= 5.0;
+   #pressureBands.%X9 := "PressData".Shuttle2_bar <= 5.0;
+
+   IF NOT "IoTestLogState".Initialized THEN
+      "IoTestLogData".BootSession := "IoTestLogData".BootSession + 1;
+      "FC_IoTestLogEvent"(
+         EventId := W#16#0001,
+         Severity := USINT#1,
+         OldValue := W#16#0,
+         NewValue := "ModbusData".hold[9],
+         PressureBands := #pressureBands
+      );
+      "IoTestLogState".Initialized := TRUE;
+      "IoTestLogData".Initialized := TRUE;
+   ELSE
+      IF "ModbusData".hold[0] <> "IoTestLogState".PreviousRequestedMask THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1100,
+            Severity := USINT#1,
+            OldValue := "IoTestLogState".PreviousRequestedMask,
+            NewValue := "ModbusData".hold[0],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[1] <> "IoTestLogState".PreviousArmWord THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1110,
+            Severity := USINT#2,
+            OldValue := "IoTestLogState".PreviousArmWord,
+            NewValue := "ModbusData".hold[1],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[13] <> "IoTestLogState".PreviousManualEnableWord THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1120,
+            Severity := USINT#2,
+            OldValue := "IoTestLogState".PreviousManualEnableWord,
+            NewValue := "ModbusData".hold[13],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[11] <> "IoTestLogState".PreviousCrankStage THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1130,
+            Severity := USINT#1,
+            OldValue := "IoTestLogState".PreviousCrankStage,
+            NewValue := "ModbusData".hold[11],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[2] <> "IoTestLogState".PreviousActiveMask THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1140,
+            Severity := USINT#1,
+            OldValue := "IoTestLogState".PreviousActiveMask,
+            NewValue := "ModbusData".hold[2],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[9] <> "IoTestLogState".PreviousStatus THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1200,
+            Severity := USINT#3,
+            OldValue := "IoTestLogState".PreviousStatus,
+            NewValue := "ModbusData".hold[9],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[10] <> "IoTestLogState".PreviousOutputImage THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1300,
+            Severity := USINT#1,
+            OldValue := "IoTestLogState".PreviousOutputImage,
+            NewValue := "ModbusData".hold[10],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[12] <> "IoTestLogState".PreviousRelayReadback THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1310,
+            Severity := USINT#1,
+            OldValue := "IoTestLogState".PreviousRelayReadback,
+            NewValue := "ModbusData".hold[12],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[14] <> "IoTestLogState".PreviousEffectiveRequest THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1320,
+            Severity := USINT#1,
+            OldValue := "IoTestLogState".PreviousEffectiveRequest,
+            NewValue := "ModbusData".hold[14],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF "ModbusData".hold[15] <> "IoTestLogState".PreviousSafetyDetail THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1210,
+            Severity := USINT#4,
+            OldValue := "IoTestLogState".PreviousSafetyDetail,
+            NewValue := "ModbusData".hold[15],
+            PressureBands := #pressureBands
+         );
+      END_IF;
+      IF #pressureBands <> "IoTestLogState".PreviousPressureBands THEN
+         "FC_IoTestLogEvent"(
+            EventId := W#16#1400,
+            Severity := USINT#2,
+            OldValue := "IoTestLogState".PreviousPressureBands,
+            NewValue := #pressureBands,
+            PressureBands := #pressureBands
+         );
+      END_IF;
+   END_IF;
+
+   "IoTestLogState".PreviousRequestedMask := "ModbusData".hold[0];
+   "IoTestLogState".PreviousArmWord := "ModbusData".hold[1];
+   "IoTestLogState".PreviousManualEnableWord := "ModbusData".hold[13];
+   "IoTestLogState".PreviousCrankStage := "ModbusData".hold[11];
+   "IoTestLogState".PreviousActiveMask := "ModbusData".hold[2];
+   "IoTestLogState".PreviousStatus := "ModbusData".hold[9];
+   "IoTestLogState".PreviousOutputImage := "ModbusData".hold[10];
+   "IoTestLogState".PreviousRelayReadback := "ModbusData".hold[12];
+   "IoTestLogState".PreviousEffectiveRequest := "ModbusData".hold[14];
+   "IoTestLogState".PreviousSafetyDetail := "ModbusData".hold[15];
+   "IoTestLogState".PreviousPressureBands := #pressureBands;
+END_FUNCTION
+
+
+FUNCTION "FC_IoTestLogModbus" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// HR22/HR23 request an event sequence (zero selects newest); changing HR24
+// refreshes one coherent response in PLC-owned HR56..HR115.
+   VAR_TEMP
+      requestedSequence : DInt;
+      selectedSequence : DInt;
+      oldestSequence : DInt;
+      newestSequence : DInt;
+      searchIndex : Int;
+      flags : Word;
+      nanoSeconds : DInt;
+   END_VAR
+BEGIN
+   IF "IoTestLogData".ValidCount > 0 THEN
+      #oldestSequence := "IoTestLogData".NextSequence -
+                         "IoTestLogData".ValidCount;
+      #newestSequence := "IoTestLogData".NextSequence - 1;
+   ELSE
+      #oldestSequence := 0;
+      #newestSequence := 0;
+   END_IF;
+
+   IF (NOT "IoTestLogReadData".RequestProcessed)
+      OR ("ModbusData".hold[24] <> "IoTestLogReadData".LastRequestToken) THEN
+      "IoTestLogReadData".LastRequestToken := "ModbusData".hold[24];
+      "IoTestLogReadData".RequestProcessed := TRUE;
+      "IoTestLogReadData".ResponseFound := FALSE;
+      "IoTestLogReadData".ResponseStatus := W#16#2;
+      #requestedSequence := WORD_TO_DINT("ModbusData".hold[22])
+                            + (WORD_TO_DINT("ModbusData".hold[23]) * 65536);
+      IF #requestedSequence = 0 THEN
+         #selectedSequence := #newestSequence;
+      ELSE
+         #selectedSequence := #requestedSequence;
+      END_IF;
+
+      IF (#selectedSequence > 0) AND ("IoTestLogData".ValidCount > 0) THEN
+         FOR #searchIndex := 0 TO 127 DO
+            IF (NOT "IoTestLogReadData".ResponseFound)
+               AND ("IoTestLogData".Records[#searchIndex].Sequence =
+                    #selectedSequence) THEN
+               "IoTestLogReadData".Response := "IoTestLogData".Records[#searchIndex];
+               "IoTestLogReadData".ResponseFound := TRUE;
+               "IoTestLogReadData".ResponseStatus := W#16#1;
+            END_IF;
+         END_FOR;
+      END_IF;
+   END_IF;
+
+   #flags := W#16#0;
+   #flags.%X0 := "IoTestLogData".Initialized;
+   #flags.%X1 := "IoTestLogData".LastTimeValid;
+   #flags.%X2 := "IoTestLogData".ValidCount = 128;
+   #flags.%X3 := "IoTestLogReadData".RequestProcessed;
+   #flags.%X4 := "IoTestLogReadData".ResponseFound;
+   #flags.%X5 := "IoTestLogData".TimeReadErrors > 0;
+   #flags.%X6 := "IoTestLogData".InvalidIndexRecoveries > 0;
+
+   "ModbusData".hold[56] := W#16#0100;
+   "ModbusData".hold[57] := #flags;
+   "ModbusData".hold[58] := DINT_TO_WORD(#oldestSequence);
+   "ModbusData".hold[59] := DINT_TO_WORD(#oldestSequence / 65536);
+   "ModbusData".hold[60] := DINT_TO_WORD(#newestSequence);
+   "ModbusData".hold[61] := DINT_TO_WORD(#newestSequence / 65536);
+   "ModbusData".hold[62] := INT_TO_WORD("IoTestLogData".ValidCount);
+   "ModbusData".hold[63] := W#16#0080;
+   "ModbusData".hold[64] := DINT_TO_WORD("IoTestLogData".OverwriteCount);
+   "ModbusData".hold[65] :=
+      DINT_TO_WORD("IoTestLogData".OverwriteCount / 65536);
+   "ModbusData".hold[66] := "IoTestLogReadData".LastRequestToken;
+   "ModbusData".hold[67] := "IoTestLogReadData".ResponseStatus;
+
+   IF "IoTestLogReadData".ResponseFound THEN
+      "ModbusData".hold[68] := DINT_TO_WORD("IoTestLogReadData".Response.Sequence);
+      "ModbusData".hold[69] :=
+         DINT_TO_WORD("IoTestLogReadData".Response.Sequence / 65536);
+      "ModbusData".hold[70] := "IoTestLogReadData".Response.EventId;
+      "ModbusData".hold[71] :=
+         USINT_TO_WORD("IoTestLogReadData".Response.Severity);
+      "ModbusData".hold[72] := "IoTestLogReadData".Response.OldValue;
+      "ModbusData".hold[73] := "IoTestLogReadData".Response.NewValue;
+      "ModbusData".hold[74] :=
+         UINT_TO_WORD("IoTestLogReadData".Response.Timestamp.YEAR);
+      "ModbusData".hold[75] :=
+         USINT_TO_WORD("IoTestLogReadData".Response.Timestamp.MONTH);
+      "ModbusData".hold[76] :=
+         USINT_TO_WORD("IoTestLogReadData".Response.Timestamp.DAY);
+      "ModbusData".hold[77] :=
+         USINT_TO_WORD("IoTestLogReadData".Response.Timestamp.HOUR);
+      "ModbusData".hold[78] :=
+         USINT_TO_WORD("IoTestLogReadData".Response.Timestamp.MINUTE);
+      "ModbusData".hold[79] :=
+         USINT_TO_WORD("IoTestLogReadData".Response.Timestamp.SECOND);
+      #nanoSeconds := UDINT_TO_DINT(
+         "IoTestLogReadData".Response.Timestamp.NANOSECOND);
+      "ModbusData".hold[80] := DINT_TO_WORD(#nanoSeconds);
+      "ModbusData".hold[81] := DINT_TO_WORD(#nanoSeconds / 65536);
+      "ModbusData".hold[82] :=
+         INT_TO_WORD("IoTestLogReadData".Response.TimeStatus);
+      "ModbusData".hold[83] := "IoTestLogReadData".Response.RequestedMask;
+      "ModbusData".hold[84] := "IoTestLogReadData".Response.ActiveMask;
+      "ModbusData".hold[85] := "IoTestLogReadData".Response.CrankStage;
+      "ModbusData".hold[86] := "IoTestLogReadData".Response.Status;
+      "ModbusData".hold[87] := "IoTestLogReadData".Response.OutputImage;
+      "ModbusData".hold[88] := "IoTestLogReadData".Response.RelayReadback;
+      "ModbusData".hold[89] := "IoTestLogReadData".Response.EffectiveRequest;
+      "ModbusData".hold[90] := "IoTestLogReadData".Response.SafetyDetail;
+      "ModbusData".hold[91] := "IoTestLogReadData".Response.PressureBands;
+      "ModbusData".hold[92] :=
+         INT_TO_WORD("IoTestLogReadData".Response.Shuttle1_x10);
+      "ModbusData".hold[93] :=
+         INT_TO_WORD("IoTestLogReadData".Response.Shuttle2_x10);
+      "ModbusData".hold[94] :=
+         INT_TO_WORD("IoTestLogReadData".Response.Estop1_x10);
+      "ModbusData".hold[95] :=
+         INT_TO_WORD("IoTestLogReadData".Response.Estop2_x10);
+      "ModbusData".hold[96] :=
+         INT_TO_WORD("IoTestLogReadData".Response.Prop_x10);
+      "ModbusData".hold[97] :=
+         INT_TO_WORD("IoTestLogReadData".Response.RawShuttle1);
+      "ModbusData".hold[98] :=
+         INT_TO_WORD("IoTestLogReadData".Response.RawShuttle2);
+      "ModbusData".hold[99] :=
+         INT_TO_WORD("IoTestLogReadData".Response.RawEstop1);
+      "ModbusData".hold[100] :=
+         INT_TO_WORD("IoTestLogReadData".Response.RawEstop2);
+      "ModbusData".hold[101] :=
+         INT_TO_WORD("IoTestLogReadData".Response.RawProp);
+      "ModbusData".hold[102] :=
+         DINT_TO_WORD("IoTestLogReadData".Response.BootSession);
+      "ModbusData".hold[103] :=
+         DINT_TO_WORD("IoTestLogReadData".Response.BootSession / 65536);
+   END_IF;
+
+   "ModbusData".hold[104] := DINT_TO_WORD("IoTestLogData".TimeReadErrors);
+   "ModbusData".hold[105] :=
+      DINT_TO_WORD("IoTestLogData".InvalidIndexRecoveries);
+   "ModbusData".hold[106] := DINT_TO_WORD("IoTestLogData".EventsWritten);
+   "ModbusData".hold[107] := "IoTestLogData".LastEventId;
+END_FUNCTION

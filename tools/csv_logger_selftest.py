@@ -18,6 +18,12 @@ logger.event({
     "elapsed_seconds": "0.003", "plc_ip": "selftest", "severity": "INFO",
     "event_type": "SELFTEST", "message": "logger validation",
 })
+logger.plc_event({
+    "elapsed_seconds": "0.004", "plc_ip": "selftest", "event_sequence": 1,
+    "boot_session": 1, "plc_timestamp": "2026-07-23T00:00:00.000000000Z",
+    "time_status": 0, "event_id": "0x0001", "event_name": "PLC_BOOT",
+    "severity": 1,
+})
 time.sleep(0.3)
 logger.close()
 

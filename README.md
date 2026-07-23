@@ -24,6 +24,7 @@ automation project.
 - `docs/production_modbus_v1.md` — versioned production command/telemetry map
 - `docs/plc_logging_feedback_safety_tasklist.md` — gated implementation and
   verification checklist for PLC history, physical feedback and safety
+- `docs/plc_event_logging_v1.md` — PLC event schema, IDs and Modbus retrieval
 - `docs/project_inventory.md` — canonical TIA projects and archived lineages
 - `docs/volvo_l60h_design.md` — system design notes
 - `docs/test_plan.md` — commissioning test plan
@@ -45,10 +46,11 @@ non-ignition outputs can be tested without cancelling the run-position ignition
 requests.
 
 CSV logging defaults OFF. When `ENABLE CSV LOGGING` is selected, the GUI records
-under `Documents/VolvoL60H/logs/YYYY-MM-DD/` as three CSV files: continuous
-telemetry, every outgoing Modbus write, and state/fault/operator events. CSV
-writes run on a background thread and do not block Modbus polling. Disabling
-logging flushes/closes the session; enabling it again starts a fresh Run ID.
+under `Documents/VolvoL60H/logs/YYYY-MM-DD/`: continuous telemetry, every
+outgoing Modbus write, GUI state/fault/operator events, and PLC historical
+events downloaded by sequence. CSV writes run on a background thread and do
+not block Modbus polling. Disabling logging flushes/closes the session; enabling
+it again starts a fresh Run ID.
 
 See [`docs/io_test_current_state.md`](docs/io_test_current_state.md) for the
 complete register map, safety behavior and current deployment status.

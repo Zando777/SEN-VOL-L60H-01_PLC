@@ -1,0 +1,15 @@
+ORGANIZATION_BLOCK "Main"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 1.0
+// Dedicated output-test cycle. The production sequencer and pressure monitor
+// are not called. Logging runs observationally inside FC_OutputTest.
+BEGIN
+   "FC_ModbusServer"();
+   "FC_Pressure"();
+
+   // First pass presents ARM to the watchdog; second pass immediately applies
+   // its result.
+   "FC_OutputTest"();
+   "FB_CommWatch_DB"(Timeout := T#2S);
+   "FC_OutputTest"();
+END_ORGANIZATION_BLOCK

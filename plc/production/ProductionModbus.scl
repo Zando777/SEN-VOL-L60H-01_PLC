@@ -43,7 +43,8 @@ FUNCTION "FC_ProductionModbusIn" : Void
 { S7_Optimized_Access := 'TRUE' }
 VERSION : 0.1
 // Call after FC_ModbusServer and before FB_ProductionCommWatch.
-// HR0..HR15 are compute-box owned. All command values are non-retentive and
+// HR0..HR15 are compute-box owned. HR4..HR6 select a diagnostic log record and
+// never enter a control equation. All control commands are non-retentive and
 // commands requiring one action are rising-edge-qualified inside the sequencer.
    VAR_TEMP
       clearIndex : Int;

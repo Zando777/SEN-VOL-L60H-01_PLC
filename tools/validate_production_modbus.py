@@ -7,11 +7,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 SOURCE = ROOT / "plc" / "production" / "ProductionModbus.scl"
+LOG_SOURCE = ROOT / "plc" / "production" / "ProductionLogging.scl"
 IO_SOURCE = ROOT / "plc" / "production" / "ProductionIO.scl"
 CYCLE_SOURCE = ROOT / "plc" / "production" / "ProductionCycle.scl"
 DOC = ROOT / "docs" / "production_modbus_v1.md"
 
 text = SOURCE.read_text(encoding="utf-8")
+log_text = LOG_SOURCE.read_text(encoding="utf-8")
 io_text = IO_SOURCE.read_text(encoding="utf-8")
 cycle_text = CYCLE_SOURCE.read_text(encoding="utf-8")
 doc = DOC.read_text(encoding="utf-8")
@@ -46,6 +48,19 @@ required_source = (
 for fragment in required_source:
     if fragment not in text:
         raise SystemExit(f"required Modbus invariant missing: {fragment}")
+
+required_logging = (
+    '"ProductionModbusData".hold[4]',
+    '"ProductionModbusData".hold[5]',
+    '"ProductionModbusData".hold[6]',
+    '"ProductionModbusData".hold[56] := W#16#0100;',
+    '"ProductionModbusData".hold[67] := "ProductionLogReadData".ResponseStatus;',
+    '"ProductionModbusData".hold[68]',
+    '"ProductionModbusData".hold[115] := "ProductionLogData".LastEventId;',
+)
+for fragment in required_logging:
+    if fragment not in log_text:
+        raise SystemExit(f"required logging Modbus invariant missing: {fragment}")
 
 required_io = (
     'FUNCTION "FC_ProductionIOPack" : Void',
@@ -107,4 +122,4 @@ for fragment in required_docs:
     if fragment not in doc:
         raise SystemExit(f"Modbus documentation invariant missing: {fragment}")
 
-print("production Modbus static validation OK: schema 1.0, HR0..HR55")
+print("production Modbus static validation OK: schema 1.0 control plus log HR4..HR6/HR56..HR115")

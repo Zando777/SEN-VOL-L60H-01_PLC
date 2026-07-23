@@ -55,6 +55,21 @@ PRESSURES = ("Shuttle 1", "Shuttle 2", "E-stop 1", "E-stop 2", "Prop")
 # Reorder only the GUI presentation.
 PRESSURE_DISPLAY_ORDER = (0, 2, 1, 3, 4)
 
+PLC_EVENT_NAMES = {
+    0x0001: "PLC_BOOT",
+    0x1100: "REQUESTED_MASK_CHANGED",
+    0x1110: "ARM_CHANGED",
+    0x1120: "MANUAL_PERMISSION_CHANGED",
+    0x1130: "CRANK_STAGE_CHANGED",
+    0x1140: "ACTIVE_MASK_CHANGED",
+    0x1200: "PLC_STATUS_CHANGED",
+    0x1210: "SAFETY_DETAIL_CHANGED",
+    0x1300: "OUTPUT_IMAGE_CHANGED",
+    0x1310: "RELAY_READBACK_CHANGED",
+    0x1320: "EFFECTIVE_REQUEST_CHANGED",
+    0x1400: "PRESSURE_BANDS_CHANGED",
+}
+
 STATUS_FIELDS = (
     ("ACTIVE", 0, True),
     ("HEARTBEAT", 1, True),
@@ -160,6 +175,15 @@ class SessionCsvLogger:
         "elapsed_seconds", "plc_ip", "severity", "event_type", "message",
         "state", "old_value", "new_value",
     )
+    PLC_EVENT_FIELDS = BASE_FIELDS + (
+        "elapsed_seconds", "plc_ip", "event_sequence", "boot_session",
+        "plc_timestamp", "time_status", "event_id", "event_name", "severity",
+        "old_value", "new_value", "requested_mask", "active_mask", "crank_stage",
+        "status", "output_image", "relay_readback", "effective_request",
+        "safety_detail", "pressure_bands", "shuttle1_bar", "shuttle2_bar",
+        "estop1_bar", "estop2_bar", "prop_bar", "shuttle1_raw", "shuttle2_raw",
+        "estop1_raw", "estop2_raw", "prop_raw",
+    )
 
     def __init__(self, plc_ip: str):
         self.plc_ip = plc_ip
@@ -173,6 +197,7 @@ class SessionCsvLogger:
             "telemetry": Path(f"{prefix}_telemetry.csv"),
             "commands": Path(f"{prefix}_commands.csv"),
             "events": Path(f"{prefix}_events.csv"),
+            "plc_events": Path(f"{prefix}_plc_events.csv"),
         }
         self._queue = queue.Queue(maxsize=50000)
         self._stop = threading.Event()
@@ -206,6 +231,9 @@ class SessionCsvLogger:
     def event(self, row: dict):
         self._enqueue("events", row)
 
+    def plc_event(self, row: dict):
+        self._enqueue("plc_events", row)
+
     def close(self):
         self._stop.set()
         self._thread.join(timeout=5.0)
@@ -219,6 +247,7 @@ class SessionCsvLogger:
             "telemetry": self.TELEMETRY_FIELDS,
             "commands": self.COMMAND_FIELDS,
             "events": self.EVENT_FIELDS,
+            "plc_events": self.PLC_EVENT_FIELDS,
         }
         try:
             for kind, path in self.paths.items():
@@ -270,6 +299,7 @@ class TestPanel:
         self.active_text = tk.StringVar(value="PLC active manual mask: 0x0000")
         self.telemetry_text = tk.StringVar(value="PLC telemetry: waiting")
         self.logging_text = tk.StringVar(value="CSV logging: OFF")
+        self.plc_log_text = tk.StringVar(value="PLC event history: waiting")
         self.crank_sequence_text = tk.StringVar(value="Crank sequence: idle")
         self.status_vars = {name: tk.StringVar(value="—") for name, _, _ in STATUS_FIELDS}
         self.safety_detail_vars = {name: tk.StringVar(value="—") for name, _, _ in SAFETY_DETAIL_FIELDS}
@@ -280,6 +310,10 @@ class TestPanel:
         self.buttons: dict[int, ttk.Button] = {}
         self.output_indicators: dict[int, tuple[tk.Label, tuple[int, ...]]] = {}
         self.logger = None
+        self.plc_log_next_sequence = None
+        self.plc_log_pending_sequence = None
+        self.plc_log_request_token = 0
+        self.plc_log_downloaded = 0
         self.last_event_values = {}
         self.last_written_controls = {}
         self._build()
@@ -413,6 +447,9 @@ class TestPanel:
         ttk.Label(outer, textvariable=self.logging_text, foreground="#555555").grid(
             row=8, column=0, columnspan=5, sticky="w", pady=(6, 0)
         )
+        ttk.Label(outer, textvariable=self.plc_log_text, foreground="#555555").grid(
+            row=9, column=0, columnspan=5, sticky="w", pady=(2, 0)
+        )
 
     def arm_changed(self):
         if self.armed.get():
@@ -459,6 +496,9 @@ class TestPanel:
                 return
             try:
                 self.logger = SessionCsvLogger(PLC_IP)
+                self.plc_log_next_sequence = None
+                self.plc_log_pending_sequence = None
+                self.plc_log_downloaded = 0
                 self.logging_text.set(
                     f"CSV logging: {self.logger.log_dir} | run {self.logger.run_id}"
                 )
@@ -475,6 +515,7 @@ class TestPanel:
                 logger.close()
                 error = logger.error
                 self.logger = None
+                self.plc_log_pending_sequence = None
                 self.logging_text.set(f"CSV logging: OFF{f' | {error}' if error else ''}")
             else:
                 self.logging_text.set("CSV logging: OFF")
@@ -717,6 +758,111 @@ class TestPanel:
             row.update({f"hr{index}": value for index, value in enumerate(regs)})
         self.logger.telemetry(row)
 
+    @staticmethod
+    def _dword(low_word, high_word):
+        return low_word | (high_word << 16)
+
+    @staticmethod
+    def _signed_word(value):
+        return value - 0x10000 if value & 0x8000 else value
+
+    def _download_plc_event_history(self):
+        """Download at most one coherent PLC event record per GUI poll."""
+        if self.logger is None:
+            return
+        response = self.client.read_holding_registers(56, count=52)
+        if response.isError():
+            # The currently deployed volvo_l60h_io_test map ends at HR21.
+            # Live CSV logging must continue normally until the separate
+            # logging-development project is deliberately promoted.
+            self.plc_log_text.set("PLC event history: unavailable (current PLC map ends at HR21)")
+            return
+        log_regs = response.registers
+        if log_regs[0] != 0x0100:
+            self.plc_log_text.set("PLC event history: unavailable (load logging test project)")
+            return
+
+        oldest = self._dword(log_regs[2], log_regs[3])
+        newest = self._dword(log_regs[4], log_regs[5])
+        valid_count = log_regs[6]
+        overwrite_count = self._dword(log_regs[8], log_regs[9])
+        echoed_token = log_regs[10]
+        response_status = log_regs[11]
+
+        if self.plc_log_next_sequence is None:
+            self.plc_log_next_sequence = oldest if valid_count else newest + 1
+
+        if self.plc_log_pending_sequence is not None and echoed_token == self.plc_log_request_token:
+            if response_status == 1:
+                event_sequence = self._dword(log_regs[12], log_regs[13])
+                if event_sequence == self.plc_log_pending_sequence:
+                    nano_seconds = self._dword(log_regs[24], log_regs[25])
+                    plc_timestamp = (
+                        f"{log_regs[18]:04d}-{log_regs[19]:02d}-{log_regs[20]:02d}T"
+                        f"{log_regs[21]:02d}:{log_regs[22]:02d}:{log_regs[23]:02d}."
+                        f"{nano_seconds:09d}Z"
+                    )
+                    event_id = log_regs[14]
+                    self.logger.plc_event({
+                        "elapsed_seconds": f"{self.logger.elapsed:.3f}",
+                        "plc_ip": PLC_IP,
+                        "event_sequence": event_sequence,
+                        "boot_session": self._dword(log_regs[46], log_regs[47]),
+                        "plc_timestamp": plc_timestamp,
+                        "time_status": self._signed_word(log_regs[26]),
+                        "event_id": f"0x{event_id:04X}",
+                        "event_name": PLC_EVENT_NAMES.get(event_id, "UNKNOWN"),
+                        "severity": log_regs[15],
+                        "old_value": f"0x{log_regs[16]:04X}",
+                        "new_value": f"0x{log_regs[17]:04X}",
+                        "requested_mask": f"0x{log_regs[27]:04X}",
+                        "active_mask": f"0x{log_regs[28]:04X}",
+                        "crank_stage": log_regs[29],
+                        "status": f"0x{log_regs[30]:04X}",
+                        "output_image": f"0x{log_regs[31]:04X}",
+                        "relay_readback": f"0x{log_regs[32]:04X}",
+                        "effective_request": f"0x{log_regs[33]:04X}",
+                        "safety_detail": f"0x{log_regs[34]:04X}",
+                        "pressure_bands": f"0x{log_regs[35]:04X}",
+                        "shuttle1_bar": self._signed_word(log_regs[36]) / 10.0,
+                        "shuttle2_bar": self._signed_word(log_regs[37]) / 10.0,
+                        "estop1_bar": self._signed_word(log_regs[38]) / 10.0,
+                        "estop2_bar": self._signed_word(log_regs[39]) / 10.0,
+                        "prop_bar": self._signed_word(log_regs[40]) / 10.0,
+                        "shuttle1_raw": self._signed_word(log_regs[41]),
+                        "shuttle2_raw": self._signed_word(log_regs[42]),
+                        "estop1_raw": self._signed_word(log_regs[43]),
+                        "estop2_raw": self._signed_word(log_regs[44]),
+                        "prop_raw": self._signed_word(log_regs[45]),
+                    })
+                    self.plc_log_next_sequence = event_sequence + 1
+                    self.plc_log_downloaded += 1
+            elif self.plc_log_pending_sequence < oldest:
+                self._log_event(
+                    "WARNING",
+                    "PLC_LOG_GAP",
+                    f"PLC events overwritten; advancing from {self.plc_log_pending_sequence} to {oldest}",
+                )
+                self.plc_log_next_sequence = oldest
+            self.plc_log_pending_sequence = None
+
+        if (
+            self.plc_log_pending_sequence is None
+            and self.plc_log_next_sequence is not None
+            and self.plc_log_next_sequence <= newest
+        ):
+            requested = self.plc_log_next_sequence
+            self.plc_log_request_token = (self.plc_log_request_token + 1) & 0xFFFF
+            self._write_register(22, requested & 0xFFFF, "PLC_LOG_SEQUENCE_LOW", "plc_log")
+            self._write_register(23, (requested >> 16) & 0xFFFF, "PLC_LOG_SEQUENCE_HIGH", "plc_log")
+            if self._write_register(24, self.plc_log_request_token, "PLC_LOG_REQUEST_TOKEN", "plc_log"):
+                self.plc_log_pending_sequence = requested
+
+        self.plc_log_text.set(
+            f"PLC event history: {valid_count}/128 | seq {oldest}..{newest} | "
+            f"overwrites {overwrite_count} | downloaded {self.plc_log_downloaded}"
+        )
+
     def refresh_buttons(self):
         for selector, button in self.buttons.items():
             if self.crank_sequence_running and selector in (5, 6, 7, 8):
@@ -788,6 +934,7 @@ class TestPanel:
                 raw_inputs,
                 (time.monotonic() - poll_started) * 1000.0,
             )
+            self._download_plc_event_history()
             self._log_changed_event("SAFE_OK", bool(bits & (1 << 3)), "WARNING")
             self._log_changed_event("COMM_LOST", bool(bits & (1 << 2)), "WARNING")
             self._log_changed_event("TEST_ACTIVE", bool(bits & (1 << 0)))

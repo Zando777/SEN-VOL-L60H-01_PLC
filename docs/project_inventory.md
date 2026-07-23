@@ -17,11 +17,13 @@ Location: `C:\Users\sensmore\Documents\Automation`
 |---|---|---|
 | `volvo_l60h_main` | Current real-machine production lineage | Keep active; do not replace with I/O-test code |
 | `volvo_l60h_io_test` | Commissioning-only independent output and crank testing | Keep active for commissioning |
+| `volvo_l60h_io_test_logging_dev` | Isolated PLC event-logging integration for the I/O test | Development only; not downloaded |
 | `volvo_l60h_production_dev` | Isolated development/compile target for the new production sequencer | Keep active; not downloaded to the PLC |
 
-Each active project retains its matching `.backup` directory in the Automation
-root. These contain TIA-generated ZIP recovery copies and must remain paired
-with the active project.
+The three original active projects retain their matching `.backup` directories
+in the Automation root. These contain TIA-generated ZIP recovery copies and
+must remain paired with their projects. The logging-development clone was
+created separately with Openness `SaveAs`.
 
 ## Archived legacy TIA projects
 
@@ -64,4 +66,6 @@ archived. It is recovery material only and must not be edited or deployed.
 Do not create another Volvo L60H TIA project without assigning it one of these
 roles or updating this inventory. New production work belongs in
 `volvo_l60h_production_dev` until it has been reviewed and deliberately promoted
-to `volvo_l60h_main`.
+to `volvo_l60h_main`. I/O-test logging work belongs in
+`volvo_l60h_io_test_logging_dev` until it has compiled, been reviewed and is
+deliberately promoted to `volvo_l60h_io_test`.

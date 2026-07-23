@@ -1,6 +1,25 @@
 # Volvo L60H PLC I/O Test — Current State
 
-Last updated: 20 July 2026
+Last updated: 23 July 2026
+
+## Logging development isolation — 23 July 2026
+
+The current commissioning project remains `volvo_l60h_io_test`. A separate
+Openness clone, `volvo_l60h_io_test_logging_dev`, contains the new bounded PLC
+event-ring blocks and is the only I/O-test project being modified for PLC
+logging. It has not been downloaded to the PLC or promoted over the current
+commissioning project.
+
+The logging clone adds a 128-record PLC event history for operator requests,
+ARM/manual permission, crank stage, safety/status, effective requests, physical
+Q image, F-RQ feedback and pressure-band changes. The GUI can download these
+records into a fourth `*_plc_events.csv` while CSV logging is enabled. See
+[`plc_event_logging_v1.md`](plc_event_logging_v1.md).
+
+The logging clone was regenerated and compiled offline on 23 July 2026 with
+**0 errors and 0 warnings**. An Openness export verified all three logging DBs,
+all three logging FCs, `UDT_IoTestEventRecord`, the logger calls in
+`FC_OutputTest`, and `ModbusData.hold[0..127]`. It has not been downloaded.
 
 ## Current progress snapshot — 20 July 2026
 

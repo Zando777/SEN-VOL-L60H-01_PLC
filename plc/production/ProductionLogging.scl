@@ -1,0 +1,585 @@
+TYPE "UDT_ProductionEventRecord"
+VERSION : 0.1
+   STRUCT
+      Sequence : DInt;
+      BootSession : DInt;
+      Timestamp : DTL;
+      TimeStatus : Int;
+      EventId : Word;
+      Severity : USInt;
+      Source : USInt;
+      OldValue : Word;
+      NewValue : Word;
+      State : Int;
+      PreviousState : Int;
+      FaultCode : Word;
+      TransitionReason : Word;
+      CommandBits : Word;
+      CommandSequence : Word;
+      RequestImage : Word;
+      OutputImage : Word;
+      RelayReadback : Word;
+      OutputMismatch : Word;
+      SafetyFlags : Word;
+      BrakeFlags : Word;
+      PressureFaultBits : Word;
+      PressureBandBits : Word;
+      Shuttle1_x10 : Int;
+      Shuttle2_x10 : Int;
+      Estop1_x10 : Int;
+      Estop2_x10 : Int;
+      Prop_x10 : Int;
+      RawShuttle1 : Int;
+      RawShuttle2 : Int;
+      RawEstop1 : Int;
+      RawEstop2 : Int;
+      RawProp : Int;
+      HeartbeatAge100ms : Word;
+      ActiveTimeout100ms : Word;
+   END_STRUCT;
+END_TYPE
+
+
+DATA_BLOCK "ProductionLogData"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Bounded diagnostic event history. Logging is observational: no value in this
+// DB is consumed by the sequencer, F-program or any physical-output equation.
+// V0.1 is deliberately non-retentive until the retained-memory and restart
+// behavior are measured on the target CPU.
+   VAR
+      Records : Array[0..127] of "UDT_ProductionEventRecord";
+      WriteIndex : Int;
+      ValidCount : Int;
+      NextSequence : DInt := 1;
+      OverwriteCount : DInt;
+      BootSession : DInt;
+      TimeReadErrors : DInt;
+      InvalidIndexRecoveries : DInt;
+      EventsWritten : DInt;
+      Initialized : Bool;
+      LastTimeValid : Bool;
+      LastEventId : Word;
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+DATA_BLOCK "ProductionLogState"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Edge detector state is separate from the event history and never participates
+// in control. A first-scan baseline prevents false edge storms after startup.
+   VAR
+      Initialized : Bool;
+      PreviousState : Int;
+      PreviousFaultCode : Word;
+      PreviousSafetyFlags : Word;
+      PreviousCommLost : Bool;
+      PreviousCommandBits : Word;
+      PreviousCommandSequence : Word;
+      PreviousRequestImage : Word;
+      PreviousOutputImage : Word;
+      PreviousRelayReadback : Word;
+      PreviousOutputMismatch : Word;
+      PreviousPressureFaultBits : Word;
+      PreviousPressureBandBits : Word;
+      PreviousPhysicalAckRequired : Bool;
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+DATA_BLOCK "ProductionLogReadData"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Coherent response buffer. It changes only when HR6 (request token) changes.
+   VAR
+      LastRequestToken : Word;
+      RequestProcessed : Bool;
+      ResponseFound : Bool;
+      ResponseStatus : Word;
+      Response : "UDT_ProductionEventRecord";
+   END_VAR
+BEGIN
+END_DATA_BLOCK
+
+
+FUNCTION "FC_ProductionLogEvent" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Writes one fixed-size snapshot to the ring. Execution is bounded and a full
+// ring overwrites its oldest entry without blocking machine control.
+   VAR_INPUT
+      EventId : Word;
+      Severity : USInt;
+      Source : USInt;
+      OldValue : Word;
+      NewValue : Word;
+   END_VAR
+   VAR_TEMP
+      index : Int;
+      timestamp : DTL;
+      timeStatus : Int;
+   END_VAR
+BEGIN
+   #index := "ProductionLogData".WriteIndex;
+   IF (#index < 0) OR (#index > 127) THEN
+      #index := 0;
+      "ProductionLogData".WriteIndex := 0;
+      "ProductionLogData".InvalidIndexRecoveries :=
+         "ProductionLogData".InvalidIndexRecoveries + 1;
+   END_IF;
+
+   #timeStatus := RD_SYS_T(#timestamp);
+   "ProductionLogData".LastTimeValid := #timeStatus = 0;
+   IF #timeStatus <> 0 THEN
+      "ProductionLogData".TimeReadErrors := "ProductionLogData".TimeReadErrors + 1;
+   END_IF;
+
+   "ProductionLogData".Records[#index].Sequence := "ProductionLogData".NextSequence;
+   "ProductionLogData".Records[#index].BootSession := "ProductionLogData".BootSession;
+   "ProductionLogData".Records[#index].Timestamp := #timestamp;
+   "ProductionLogData".Records[#index].TimeStatus := #timeStatus;
+   "ProductionLogData".Records[#index].EventId := #EventId;
+   "ProductionLogData".Records[#index].Severity := #Severity;
+   "ProductionLogData".Records[#index].Source := #Source;
+   "ProductionLogData".Records[#index].OldValue := #OldValue;
+   "ProductionLogData".Records[#index].NewValue := #NewValue;
+   "ProductionLogData".Records[#index].State := "ProductionSeq_DB".State;
+   "ProductionLogData".Records[#index].PreviousState := "ProductionSeq_DB".PreviousState;
+   "ProductionLogData".Records[#index].FaultCode := "ProductionSeq_DB".FaultCode;
+   "ProductionLogData".Records[#index].TransitionReason := "ProductionSeq_DB".TransitionReason;
+   "ProductionLogData".Records[#index].CommandBits := "ProductionModbusData".hold[0];
+   "ProductionLogData".Records[#index].CommandSequence := "ProductionModbusData".hold[3];
+   "ProductionLogData".Records[#index].RequestImage := "ProductionModbusData".hold[48];
+   "ProductionLogData".Records[#index].OutputImage := "ProductionIOData".OutputImage;
+   "ProductionLogData".Records[#index].RelayReadback := "ProductionIOData".RelayReadback;
+   "ProductionLogData".Records[#index].OutputMismatch := "ProductionIOData".OutputMismatch;
+   "ProductionLogData".Records[#index].SafetyFlags := "ProductionModbusData".hold[52];
+   "ProductionLogData".Records[#index].BrakeFlags := "ProductionModbusData".hold[53];
+   "ProductionLogData".Records[#index].PressureFaultBits := "ProductionIOData".PressureFaultBits;
+   "ProductionLogData".Records[#index].PressureBandBits := "ProductionIOData".PressureBandBits;
+   "ProductionLogData".Records[#index].Shuttle1_x10 :=
+      REAL_TO_INT("PressData".Shuttle1_bar * 10.0);
+   "ProductionLogData".Records[#index].Shuttle2_x10 :=
+      REAL_TO_INT("PressData".Shuttle2_bar * 10.0);
+   "ProductionLogData".Records[#index].Estop1_x10 :=
+      REAL_TO_INT("PressData".Estop1_bar * 10.0);
+   "ProductionLogData".Records[#index].Estop2_x10 :=
+      REAL_TO_INT("PressData".Estop2_bar * 10.0);
+   "ProductionLogData".Records[#index].Prop_x10 :=
+      REAL_TO_INT("PressData".Prop_bar * 10.0);
+   "ProductionLogData".Records[#index].RawShuttle1 := "Press_Shuttle_1";
+   "ProductionLogData".Records[#index].RawShuttle2 := "Press_Shuttle_2";
+   "ProductionLogData".Records[#index].RawEstop1 := "Press_Estop_1";
+   "ProductionLogData".Records[#index].RawEstop2 := "Press_Estop_2";
+   "ProductionLogData".Records[#index].RawProp := "Press_Prop";
+   "ProductionLogData".Records[#index].HeartbeatAge100ms :=
+      DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".HeartbeatAge) / 100);
+   "ProductionLogData".Records[#index].ActiveTimeout100ms :=
+      DINT_TO_WORD(TIME_TO_DINT("ProductionComm_DB".ActiveTimeout) / 100);
+
+   "ProductionLogData".LastEventId := #EventId;
+   "ProductionLogData".EventsWritten := "ProductionLogData".EventsWritten + 1;
+   "ProductionLogData".NextSequence := "ProductionLogData".NextSequence + 1;
+   IF "ProductionLogData".ValidCount < 128 THEN
+      "ProductionLogData".ValidCount := "ProductionLogData".ValidCount + 1;
+   ELSE
+      "ProductionLogData".OverwriteCount := "ProductionLogData".OverwriteCount + 1;
+   END_IF;
+
+   #index := #index + 1;
+   IF #index > 127 THEN
+      #index := 0;
+   END_IF;
+   "ProductionLogData".WriteIndex := #index;
+END_FUNCTION
+
+
+FUNCTION "FC_ProductionLogging" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// Edge-triggered production event coverage. At most twelve fixed checks can
+// write in one scan; there is no unbounded loop, queue or dynamic allocation.
+   VAR_TEMP
+      stateWord : Word;
+      safetyFlags : Word;
+      physicalAckWord : Word;
+      previousPhysicalAckWord : Word;
+   END_VAR
+BEGIN
+   #stateWord := INT_TO_WORD("ProductionSeq_DB".State);
+   #safetyFlags := "ProductionModbusData".hold[52];
+   #physicalAckWord := W#16#0;
+   #physicalAckWord.%X0 := "ProductionSeq_DB".PhysicalAckRequired;
+   #previousPhysicalAckWord := W#16#0;
+   #previousPhysicalAckWord.%X0 :=
+      "ProductionLogState".PreviousPhysicalAckRequired;
+
+   IF NOT "ProductionLogState".Initialized THEN
+      "ProductionLogData".BootSession := "ProductionLogData".BootSession + 1;
+      "FC_ProductionLogEvent"(
+         EventId := W#16#0001,
+         Severity := USINT#1,
+         Source := USINT#1,
+         OldValue := W#16#0,
+         NewValue := INT_TO_WORD("ProductionSeq_DB".State)
+      );
+
+      "ProductionLogState".PreviousState := "ProductionSeq_DB".State;
+      "ProductionLogState".PreviousFaultCode := "ProductionSeq_DB".FaultCode;
+      "ProductionLogState".PreviousSafetyFlags := #safetyFlags;
+      "ProductionLogState".PreviousCommLost := "ProductionComm_DB".CommLost;
+      "ProductionLogState".PreviousCommandBits := "ProductionModbusData".hold[0];
+      "ProductionLogState".PreviousCommandSequence := "ProductionModbusData".hold[3];
+      "ProductionLogState".PreviousRequestImage := "ProductionModbusData".hold[48];
+      "ProductionLogState".PreviousOutputImage := "ProductionIOData".OutputImage;
+      "ProductionLogState".PreviousRelayReadback := "ProductionIOData".RelayReadback;
+      "ProductionLogState".PreviousOutputMismatch := "ProductionIOData".OutputMismatch;
+      "ProductionLogState".PreviousPressureFaultBits := "ProductionIOData".PressureFaultBits;
+      "ProductionLogState".PreviousPressureBandBits := "ProductionIOData".PressureBandBits;
+      "ProductionLogState".PreviousPhysicalAckRequired :=
+         "ProductionSeq_DB".PhysicalAckRequired;
+      "ProductionLogState".Initialized := TRUE;
+      "ProductionLogData".Initialized := TRUE;
+   ELSE
+      IF "ProductionSeq_DB".State <> "ProductionLogState".PreviousState THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0100,
+            Severity := USINT#1,
+            Source := USINT#2,
+            OldValue := INT_TO_WORD("ProductionLogState".PreviousState),
+            NewValue := #stateWord
+         );
+      END_IF;
+
+      IF "ProductionSeq_DB".FaultCode <> "ProductionLogState".PreviousFaultCode THEN
+         IF "ProductionSeq_DB".FaultCode = W#16#0 THEN
+            "FC_ProductionLogEvent"(
+               EventId := W#16#0201,
+               Severity := USINT#1,
+               Source := USINT#2,
+               OldValue := "ProductionLogState".PreviousFaultCode,
+               NewValue := W#16#0
+            );
+         ELSE
+            "FC_ProductionLogEvent"(
+               EventId := W#16#0200,
+               Severity := USINT#3,
+               Source := USINT#2,
+               OldValue := "ProductionLogState".PreviousFaultCode,
+               NewValue := "ProductionSeq_DB".FaultCode
+            );
+         END_IF;
+      END_IF;
+
+      IF #safetyFlags <> "ProductionLogState".PreviousSafetyFlags THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0300,
+            Severity := USINT#4,
+            Source := USINT#3,
+            OldValue := "ProductionLogState".PreviousSafetyFlags,
+            NewValue := #safetyFlags
+         );
+      END_IF;
+
+      IF "ProductionComm_DB".CommLost <> "ProductionLogState".PreviousCommLost THEN
+         IF "ProductionComm_DB".CommLost THEN
+            "FC_ProductionLogEvent"(
+               EventId := W#16#0400,
+               Severity := USINT#3,
+               Source := USINT#4,
+               OldValue := W#16#0,
+               NewValue := W#16#1
+            );
+         ELSE
+            "FC_ProductionLogEvent"(
+               EventId := W#16#0401,
+               Severity := USINT#1,
+               Source := USINT#4,
+               OldValue := W#16#1,
+               NewValue := W#16#0
+            );
+         END_IF;
+      END_IF;
+
+      IF ("ProductionModbusData".hold[0] <> "ProductionLogState".PreviousCommandBits)
+         OR ("ProductionModbusData".hold[3] <> "ProductionLogState".PreviousCommandSequence) THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0500,
+            Severity := USINT#1,
+            Source := USINT#5,
+            OldValue := "ProductionLogState".PreviousCommandBits,
+            NewValue := "ProductionModbusData".hold[0]
+         );
+      END_IF;
+
+      IF "ProductionModbusData".hold[48] <> "ProductionLogState".PreviousRequestImage THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0600,
+            Severity := USINT#1,
+            Source := USINT#6,
+            OldValue := "ProductionLogState".PreviousRequestImage,
+            NewValue := "ProductionModbusData".hold[48]
+         );
+      END_IF;
+
+      IF "ProductionIOData".OutputImage <> "ProductionLogState".PreviousOutputImage THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0610,
+            Severity := USINT#1,
+            Source := USINT#6,
+            OldValue := "ProductionLogState".PreviousOutputImage,
+            NewValue := "ProductionIOData".OutputImage
+         );
+      END_IF;
+
+      IF "ProductionIOData".RelayReadback <> "ProductionLogState".PreviousRelayReadback THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0620,
+            Severity := USINT#1,
+            Source := USINT#6,
+            OldValue := "ProductionLogState".PreviousRelayReadback,
+            NewValue := "ProductionIOData".RelayReadback
+         );
+      END_IF;
+
+      IF "ProductionIOData".OutputMismatch <> "ProductionLogState".PreviousOutputMismatch THEN
+         IF "ProductionIOData".OutputMismatch = W#16#0 THEN
+            "FC_ProductionLogEvent"(
+               EventId := W#16#0631,
+               Severity := USINT#1,
+               Source := USINT#6,
+               OldValue := "ProductionLogState".PreviousOutputMismatch,
+               NewValue := W#16#0
+            );
+         ELSE
+            "FC_ProductionLogEvent"(
+               EventId := W#16#0630,
+               Severity := USINT#2,
+               Source := USINT#6,
+               OldValue := "ProductionLogState".PreviousOutputMismatch,
+               NewValue := "ProductionIOData".OutputMismatch
+            );
+         END_IF;
+      END_IF;
+
+      IF "ProductionIOData".PressureFaultBits <>
+         "ProductionLogState".PreviousPressureFaultBits THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0700,
+            Severity := USINT#3,
+            Source := USINT#7,
+            OldValue := "ProductionLogState".PreviousPressureFaultBits,
+            NewValue := "ProductionIOData".PressureFaultBits
+         );
+      END_IF;
+
+      IF "ProductionIOData".PressureBandBits <>
+         "ProductionLogState".PreviousPressureBandBits THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0710,
+            Severity := USINT#1,
+            Source := USINT#7,
+            OldValue := "ProductionLogState".PreviousPressureBandBits,
+            NewValue := "ProductionIOData".PressureBandBits
+         );
+      END_IF;
+
+      IF "ProductionSeq_DB".PhysicalAckRequired <>
+         "ProductionLogState".PreviousPhysicalAckRequired THEN
+         "FC_ProductionLogEvent"(
+            EventId := W#16#0350,
+            Severity := USINT#2,
+            Source := USINT#3,
+            OldValue := #previousPhysicalAckWord,
+            NewValue := #physicalAckWord
+         );
+      END_IF;
+
+      "ProductionLogState".PreviousState := "ProductionSeq_DB".State;
+      "ProductionLogState".PreviousFaultCode := "ProductionSeq_DB".FaultCode;
+      "ProductionLogState".PreviousSafetyFlags := #safetyFlags;
+      "ProductionLogState".PreviousCommLost := "ProductionComm_DB".CommLost;
+      "ProductionLogState".PreviousCommandBits := "ProductionModbusData".hold[0];
+      "ProductionLogState".PreviousCommandSequence := "ProductionModbusData".hold[3];
+      "ProductionLogState".PreviousRequestImage := "ProductionModbusData".hold[48];
+      "ProductionLogState".PreviousOutputImage := "ProductionIOData".OutputImage;
+      "ProductionLogState".PreviousRelayReadback := "ProductionIOData".RelayReadback;
+      "ProductionLogState".PreviousOutputMismatch := "ProductionIOData".OutputMismatch;
+      "ProductionLogState".PreviousPressureFaultBits := "ProductionIOData".PressureFaultBits;
+      "ProductionLogState".PreviousPressureBandBits := "ProductionIOData".PressureBandBits;
+      "ProductionLogState".PreviousPhysicalAckRequired :=
+         "ProductionSeq_DB".PhysicalAckRequired;
+   END_IF;
+END_FUNCTION
+
+
+FUNCTION "FC_ProductionLogModbus" : Void
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+// HR4/HR5 request an event sequence (0 = newest); changing HR6 atomically
+// refreshes the response. HR56..HR127 are PLC-owned and read-only to the client.
+   VAR_TEMP
+      requestedSequence : DInt;
+      selectedSequence : DInt;
+      oldestSequence : DInt;
+      newestSequence : DInt;
+      searchIndex : Int;
+      flags : Word;
+      nanoSeconds : DInt;
+   END_VAR
+BEGIN
+   IF "ProductionLogData".ValidCount > 0 THEN
+      #oldestSequence := "ProductionLogData".NextSequence -
+                         "ProductionLogData".ValidCount;
+      #newestSequence := "ProductionLogData".NextSequence - 1;
+   ELSE
+      #oldestSequence := 0;
+      #newestSequence := 0;
+   END_IF;
+
+   IF (NOT "ProductionLogReadData".RequestProcessed)
+      OR ("ProductionModbusData".hold[6] <> "ProductionLogReadData".LastRequestToken) THEN
+      "ProductionLogReadData".LastRequestToken := "ProductionModbusData".hold[6];
+      "ProductionLogReadData".RequestProcessed := TRUE;
+      "ProductionLogReadData".ResponseFound := FALSE;
+      "ProductionLogReadData".ResponseStatus := W#16#2;
+
+      #requestedSequence := WORD_TO_DINT("ProductionModbusData".hold[4])
+                            + (WORD_TO_DINT("ProductionModbusData".hold[5]) * 65536);
+      IF #requestedSequence = 0 THEN
+         #selectedSequence := #newestSequence;
+      ELSE
+         #selectedSequence := #requestedSequence;
+      END_IF;
+
+      IF (#selectedSequence > 0) AND ("ProductionLogData".ValidCount > 0) THEN
+         FOR #searchIndex := 0 TO 127 DO
+            IF (NOT "ProductionLogReadData".ResponseFound)
+               AND ("ProductionLogData".Records[#searchIndex].Sequence =
+                    #selectedSequence) THEN
+               "ProductionLogReadData".Response :=
+                  "ProductionLogData".Records[#searchIndex];
+               "ProductionLogReadData".ResponseFound := TRUE;
+               "ProductionLogReadData".ResponseStatus := W#16#1;
+            END_IF;
+         END_FOR;
+      END_IF;
+   END_IF;
+
+   #flags := W#16#0;
+   #flags.%X0 := "ProductionLogData".Initialized;
+   #flags.%X1 := "ProductionLogData".LastTimeValid;
+   #flags.%X2 := "ProductionLogData".ValidCount = 128;
+   #flags.%X3 := "ProductionLogReadData".RequestProcessed;
+   #flags.%X4 := "ProductionLogReadData".ResponseFound;
+   #flags.%X5 := "ProductionLogData".TimeReadErrors > 0;
+   #flags.%X6 := "ProductionLogData".InvalidIndexRecoveries > 0;
+
+   "ProductionModbusData".hold[56] := W#16#0100; // log schema 1.0
+   "ProductionModbusData".hold[57] := #flags;
+   "ProductionModbusData".hold[58] := DINT_TO_WORD(#oldestSequence);
+   "ProductionModbusData".hold[59] := DINT_TO_WORD(#oldestSequence / 65536);
+   "ProductionModbusData".hold[60] := DINT_TO_WORD(#newestSequence);
+   "ProductionModbusData".hold[61] := DINT_TO_WORD(#newestSequence / 65536);
+   "ProductionModbusData".hold[62] := INT_TO_WORD("ProductionLogData".ValidCount);
+   "ProductionModbusData".hold[63] := W#16#0080; // capacity = 128 records
+   "ProductionModbusData".hold[64] :=
+      DINT_TO_WORD("ProductionLogData".OverwriteCount);
+   "ProductionModbusData".hold[65] :=
+      DINT_TO_WORD("ProductionLogData".OverwriteCount / 65536);
+   "ProductionModbusData".hold[66] := "ProductionLogReadData".LastRequestToken;
+   "ProductionModbusData".hold[67] := "ProductionLogReadData".ResponseStatus;
+
+   IF "ProductionLogReadData".ResponseFound THEN
+      "ProductionModbusData".hold[68] :=
+         DINT_TO_WORD("ProductionLogReadData".Response.Sequence);
+      "ProductionModbusData".hold[69] :=
+         DINT_TO_WORD("ProductionLogReadData".Response.Sequence / 65536);
+      "ProductionModbusData".hold[70] := "ProductionLogReadData".Response.EventId;
+      "ProductionModbusData".hold[71] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Severity);
+      "ProductionModbusData".hold[72] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Source);
+      "ProductionModbusData".hold[73] := "ProductionLogReadData".Response.OldValue;
+      "ProductionModbusData".hold[74] := "ProductionLogReadData".Response.NewValue;
+      "ProductionModbusData".hold[75] :=
+         UINT_TO_WORD("ProductionLogReadData".Response.Timestamp.YEAR);
+      "ProductionModbusData".hold[76] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Timestamp.MONTH);
+      "ProductionModbusData".hold[77] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Timestamp.DAY);
+      "ProductionModbusData".hold[78] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Timestamp.HOUR);
+      "ProductionModbusData".hold[79] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Timestamp.MINUTE);
+      "ProductionModbusData".hold[80] :=
+         USINT_TO_WORD("ProductionLogReadData".Response.Timestamp.SECOND);
+      #nanoSeconds :=
+         UDINT_TO_DINT("ProductionLogReadData".Response.Timestamp.NANOSECOND);
+      "ProductionModbusData".hold[81] := DINT_TO_WORD(#nanoSeconds);
+      "ProductionModbusData".hold[82] := DINT_TO_WORD(#nanoSeconds / 65536);
+      "ProductionModbusData".hold[83] :=
+         INT_TO_WORD("ProductionLogReadData".Response.TimeStatus);
+      "ProductionModbusData".hold[84] :=
+         INT_TO_WORD("ProductionLogReadData".Response.State);
+      "ProductionModbusData".hold[85] :=
+         INT_TO_WORD("ProductionLogReadData".Response.PreviousState);
+      "ProductionModbusData".hold[86] := "ProductionLogReadData".Response.FaultCode;
+      "ProductionModbusData".hold[87] :=
+         "ProductionLogReadData".Response.TransitionReason;
+      "ProductionModbusData".hold[88] := "ProductionLogReadData".Response.CommandBits;
+      "ProductionModbusData".hold[89] :=
+         "ProductionLogReadData".Response.CommandSequence;
+      "ProductionModbusData".hold[90] := "ProductionLogReadData".Response.RequestImage;
+      "ProductionModbusData".hold[91] := "ProductionLogReadData".Response.OutputImage;
+      "ProductionModbusData".hold[92] :=
+         "ProductionLogReadData".Response.RelayReadback;
+      "ProductionModbusData".hold[93] :=
+         "ProductionLogReadData".Response.OutputMismatch;
+      "ProductionModbusData".hold[94] := "ProductionLogReadData".Response.SafetyFlags;
+      "ProductionModbusData".hold[95] := "ProductionLogReadData".Response.BrakeFlags;
+      "ProductionModbusData".hold[96] :=
+         "ProductionLogReadData".Response.PressureFaultBits;
+      "ProductionModbusData".hold[97] :=
+         "ProductionLogReadData".Response.PressureBandBits;
+      "ProductionModbusData".hold[98] :=
+         INT_TO_WORD("ProductionLogReadData".Response.Shuttle1_x10);
+      "ProductionModbusData".hold[99] :=
+         INT_TO_WORD("ProductionLogReadData".Response.Shuttle2_x10);
+      "ProductionModbusData".hold[100] :=
+         INT_TO_WORD("ProductionLogReadData".Response.Estop1_x10);
+      "ProductionModbusData".hold[101] :=
+         INT_TO_WORD("ProductionLogReadData".Response.Estop2_x10);
+      "ProductionModbusData".hold[102] :=
+         INT_TO_WORD("ProductionLogReadData".Response.Prop_x10);
+      "ProductionModbusData".hold[103] :=
+         INT_TO_WORD("ProductionLogReadData".Response.RawShuttle1);
+      "ProductionModbusData".hold[104] :=
+         INT_TO_WORD("ProductionLogReadData".Response.RawShuttle2);
+      "ProductionModbusData".hold[105] :=
+         INT_TO_WORD("ProductionLogReadData".Response.RawEstop1);
+      "ProductionModbusData".hold[106] :=
+         INT_TO_WORD("ProductionLogReadData".Response.RawEstop2);
+      "ProductionModbusData".hold[107] :=
+         INT_TO_WORD("ProductionLogReadData".Response.RawProp);
+      "ProductionModbusData".hold[108] :=
+         "ProductionLogReadData".Response.HeartbeatAge100ms;
+      "ProductionModbusData".hold[109] :=
+         "ProductionLogReadData".Response.ActiveTimeout100ms;
+      "ProductionModbusData".hold[110] :=
+         DINT_TO_WORD("ProductionLogReadData".Response.BootSession);
+      "ProductionModbusData".hold[111] :=
+         DINT_TO_WORD("ProductionLogReadData".Response.BootSession / 65536);
+   END_IF;
+
+   "ProductionModbusData".hold[112] :=
+      DINT_TO_WORD("ProductionLogData".TimeReadErrors);
+   "ProductionModbusData".hold[113] :=
+      DINT_TO_WORD("ProductionLogData".InvalidIndexRecoveries);
+   "ProductionModbusData".hold[114] :=
+      DINT_TO_WORD("ProductionLogData".EventsWritten);
+   "ProductionModbusData".hold[115] := "ProductionLogData".LastEventId;
+END_FUNCTION
